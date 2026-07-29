@@ -369,13 +369,33 @@ function App() {
     return { ok: true };
   };
   const isSuperAdmin = users.find((u) => u.userId === currentUser)?.role === SUPER;
-  const inviteUser = async (userId, name) => {
+  // Self-registration is disabled: the Super Admin creates each user ID together
+  // with its password (and, optionally, a security question for self-service
+  // password reset). Accounts are therefore created already-registered.
+  const inviteUser = async (userId, name, password, question, answer) => {
     userId = (userId || "").trim();
     if (!isSuperAdmin) return { ok: false, error: "Only the Super Admin can create user IDs." };
     if (!userId) return { ok: false, error: "Choose a user ID." };
+    if ((password || "").length < 6) return { ok: false, error: "Set a password of at least 6 characters for the new user." };
     if (users.length >= MAX_USERS) return { ok: false, error: `Maximum ${MAX_USERS} users reached.` };
     if (users.some((u) => u.userId.toLowerCase() === userId.toLowerCase())) return { ok: false, error: "That user ID already exists." };
-    await persistUsers([...users, { userId, name: (name || "").trim(), role: "admin", registered: false }]);
+    const h = await hash(password);
+    const ah = answer ? await hash((answer || "").toLowerCase().trim()) : "";
+    await persistUsers([...users, { userId, name: (name || "").trim(), role: "admin", registered: true, hash: h, question: (question || "").trim(), answerHash: ah }]);
+    return { ok: true };
+  };
+  // Super Admin sets or replaces a user's password directly (replaces the old
+  // "reset registration" flow, which relied on the user re-registering).
+  const setUserPassword = async (userId, password) => {
+    if (!isSuperAdmin) return { ok: false, error: "Only the Super Admin can set passwords." };
+    if (userId === currentUser) return { ok: false, error: "Use Forgot password on the sign-in screen to change your own password." };
+    const idx = users.findIndex((x) => x.userId === userId);
+    if (idx < 0) return { ok: false, error: "No such user." };
+    if ((password || "").length < 6) return { ok: false, error: "Password must be at least 6 characters." };
+    const h = await hash(password);
+    const next = [...users];
+    next[idx] = { ...next[idx], hash: h, registered: true };
+    await persistUsers(next);
     return { ok: true };
   };
   const saveAppUrl = async (u) => {
@@ -945,7 +965,7 @@ function App() {
   };
 
   if (LOGIN_ENABLED && !authChecked) return <div className="min-h-screen bg-slate-100 flex items-center justify-center text-slate-500">…</div>;
-  if (LOGIN_ENABLED && !authed) return <AuthScreen users={users} addUser={addUser} tryLogin={tryLogin} registerUser={registerUser} resetPassword={resetPassword} />;
+  if (LOGIN_ENABLED && !authed) return <AuthScreen users={users} addUser={addUser} tryLogin={tryLogin} resetPassword={resetPassword} />;
   if (!loaded) return <div className="min-h-screen bg-slate-100 flex items-center justify-center text-slate-500">Loading your records…</div>;
 
   const Sel = ({ k, label, opts, names }) => (
@@ -1463,7 +1483,7 @@ function App() {
             <AccountPanel data={data} save={save} addAccount={addAccount} ask={ask} />
             <CurrencyPanel data={data} addCurrency={addCurrency} save={save} ask={ask} />
             {isSuperAdmin && <ReleasePanel release={release} readOnly={readOnly} currentHost={pagePrint()} legacyHostOnly={legacyHostOnly} publishRelease={publishRelease} setEntryLock={setEntryLock} ask={ask} />}
-            <UserPanel users={users} maxUsers={MAX_USERS} currentUser={currentUser} isSuperAdmin={isSuperAdmin} appUrl={appUrl} saveAppUrl={saveAppUrl} referrerUrl={refPrint()} fallbackUrl={(release && release.href) || hrefPrint()} inviteUser={inviteUser} renameUser={renameUser} removeUser={removeUser} resetRegistration={resetRegistration} ask={ask} />
+            <UserPanel users={users} maxUsers={MAX_USERS} currentUser={currentUser} isSuperAdmin={isSuperAdmin} inviteUser={inviteUser} renameUser={renameUser} removeUser={removeUser} setUserPassword={setUserPassword} ask={ask} />
             <div>
               <h2 className="font-serif text-lg mb-4">Data</h2>
               <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
@@ -1923,11 +1943,13 @@ function TransfersTab({ fTr, setModal, remove, ask }) {
   );
 }
 
-function AuthScreen({ users, addUser, tryLogin, registerUser, resetPassword }) {
+function AuthScreen({ users, addUser, tryLogin, resetPassword }) {
   const hasUsers = users.length > 0;
-  const invited = urlParam("register");
-  const [mode, setMode] = useState(hasUsers ? (invited ? "register" : "landing") : "firstSetup");
-  const [userId, setUserId] = useState(hasUsers && invited ? invited : "");
+  // Self-registration is disabled. Only the initial Super Admin bootstrap
+  // (when no accounts exist yet), signing in, and self-service password reset
+  // remain — every other account is created by the Super Admin in Settings.
+  const [mode, setMode] = useState(hasUsers ? "signin" : "firstSetup");
+  const [userId, setUserId] = useState("");
   const [pw, setPw] = useState("");
   const [pw2, setPw2] = useState("");
   const QUESTIONS = ["What was the name of your first pet?", "In what city were you born?", "What is your mother's maiden name?", "What was the name of your first school?", "What is your favorite book?", "Custom…"];
@@ -1941,23 +1963,13 @@ function AuthScreen({ users, addUser, tryLogin, registerUser, resetPassword }) {
   const resetForm = () => { setUserId(""); setPw(""); setPw2(""); setAnswer(""); setNewPw(""); setNewPw2(""); setErr(""); };
   const goto = (m) => { resetForm(); setMode(m); };
   const target = users.find((u) => u.userId.toLowerCase() === userId.trim().toLowerCase());
-  const awaiting = users.filter((u) => !u.registered).length;
-  const needsCreds = mode === "firstSetup" || mode === "register";
+  const needsCreds = mode === "firstSetup";
   const submit = async () => {
     setErr(""); setBusy(true);
     try {
       if (mode === "signin") {
         if (!userId || !pw) { setErr("Enter your user ID and password."); return; }
         const res = await tryLogin(userId.trim(), pw);
-        if (!res.ok) setErr(res.error);
-      } else if (mode === "register") {
-        if (!userId.trim()) { setErr("Enter the user ID the Super Admin created for you."); return; }
-        if (!target) { setErr("No such user ID. Only user IDs created by the Super Admin can register."); return; }
-        if (target.registered) { setErr("That user ID is already registered — sign in instead."); return; }
-        if (pw.length < 6) { setErr("Password must be at least 6 characters."); return; }
-        if (pw !== pw2) { setErr("Passwords do not match."); return; }
-        if (!question.trim() || !answer.trim()) { setErr("Pick a security question and answer."); return; }
-        const res = await registerUser(userId.trim(), pw, question.trim(), answer);
         if (!res.ok) setErr(res.error);
       } else if (mode === "firstSetup") {
         if (!userId.trim()) { setErr("Choose a user ID."); return; }
@@ -1975,8 +1987,8 @@ function AuthScreen({ users, addUser, tryLogin, registerUser, resetPassword }) {
       }
     } finally { setBusy(false); }
   };
-  const subtitle = mode === "firstSetup" ? "Super Admin Setup" : mode === "landing" ? "Sign in or Register" : mode === "register" ? "Register Account" : mode === "reset" ? "Reset Password" : "Secure Sign-in";
-  const cta = mode === "reset" ? "RESET PASSWORD" : mode === "register" ? "REGISTER & SIGN IN" : mode === "firstSetup" ? "CREATE & SIGN IN" : "SIGN IN";
+  const subtitle = mode === "firstSetup" ? "Super Admin Setup" : mode === "reset" ? "Reset Password" : "Secure Sign-in";
+  const cta = mode === "reset" ? "RESET PASSWORD" : mode === "firstSetup" ? "CREATE & SIGN IN" : "SIGN IN";
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 flex items-center justify-center p-6">
       <div className="bg-white rounded-xl shadow-2xl border border-slate-200 w-full max-w-sm overflow-hidden">
@@ -1984,42 +1996,12 @@ function AuthScreen({ users, addUser, tryLogin, registerUser, resetPassword }) {
           <div className="w-10 h-10 rounded-md border border-slate-600 flex items-center justify-center font-serif text-lg tracking-widest">X</div>
           <div><h1 className="font-serif text-lg tracking-wide">XYZ Financial Report</h1><p className="text-[10px] uppercase tracking-[0.18em] text-slate-400">{subtitle}</p></div>
         </div>
-        {(mode === "signin" || mode === "register" || mode === "firstSetup") && (
-          <div className="grid grid-cols-2 border-b border-slate-200">
-            {[["signin", "Sign in"], ["register", "Register"]].map(([k, l]) => {
-              const on = k === "signin" ? mode === "signin" : mode === "register" || mode === "firstSetup";
-              return (
-                <button key={k} onClick={() => goto(k === "register" && !hasUsers ? "firstSetup" : k)} className={`py-3 text-[11px] font-medium uppercase tracking-[0.14em] transition-colors ${on ? "text-slate-900 border-b-2 border-slate-900" : "text-slate-400 hover:text-slate-700"}`}>{l}</button>
-              );
-            })}
-          </div>
-        )}
         <div className="p-6">
-          {mode === "landing" ? (<>
-            <p className="text-sm text-slate-600 mb-1">Welcome.</p>
-            <p className="text-xs text-slate-500 mb-5">Sign in if you already have an account, or register a user ID the Super Admin has created for you.</p>
-            <button onClick={() => goto("signin")} className="w-full bg-slate-900 hover:bg-slate-700 text-white text-sm font-medium py-2.5 rounded-lg tracking-wide shadow-sm">SIGN IN</button>
-            <button disabled={!awaiting} onClick={() => goto("register")} title={awaiting ? "" : "No user ID is waiting to be registered"} className={`w-full mt-2.5 text-sm font-medium py-2.5 rounded-lg tracking-wide border ${awaiting ? "border-slate-300 text-slate-800 hover:bg-slate-50" : "border-slate-200 text-slate-300 cursor-not-allowed"}`}>REGISTER</button>
-            <p className={`text-[11px] mt-3 text-center ${awaiting ? "text-emerald-700" : "text-slate-400"}`}>
-              {awaiting ? `${awaiting} user ID${awaiting > 1 ? "s" : ""} awaiting registration.` : "Registration opens once the Super Admin creates a user ID for you."}
-            </p>
-            <div className="mt-4 text-center text-xs"><button onClick={() => goto("reset")} className="text-blue-700 hover:underline">Forgot password?</button></div>
-            <p className="text-[10px] text-slate-400 mt-4 text-center">Local lock screen · passwords &amp; answers hashed (SHA-256)</p>
-          </>) : (<>
-          {mode === "signin" && !hasUsers && <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5 mb-4">No accounts exist yet — use <b>Register</b> to set up the Super Admin account.</p>}
-          {mode === "firstSetup" && <p className="text-xs text-slate-500 mb-4">Set up the Super Admin account — yours, and the only one. All further user IDs are Admins created by you in Settings, and they register their own password here.</p>}
-          {mode === "register" && <p className="text-xs text-slate-500 mb-4">Enter a user ID created for you by the Super Admin, then set your own password and security question.</p>}
-          {mode === "reset" && <p className="text-xs text-slate-500 mb-4">Enter your user ID, then answer your security question to set a new password.</p>}
+          {mode === "firstSetup" && <p className="text-xs text-slate-500 mb-4">Set up the Super Admin account — yours, and the only one. All further user IDs (and their passwords) are created by you in Settings; there is no self-registration.</p>}
+          {mode === "reset" && <p className="text-xs text-slate-500 mb-4">Enter your user ID, then answer your security question to set a new password. If no security question was set, ask the Super Admin to set a new password for you.</p>}
           <label className="block mb-3"><span className="block text-xs font-medium text-slate-600 mb-1">User ID</span><input autoFocus value={userId} onChange={(e) => setUserId(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-100" placeholder="e.g. AL1409" /></label>
-          {mode === "register" && userId.trim() !== "" && (
-            target && !target.registered
-              ? <p className="text-[11px] text-emerald-700 -mt-1 mb-3">User ID found — set your password below.</p>
-              : target
-                ? <p className="text-[11px] text-amber-700 -mt-1 mb-3">Already registered — use Sign in.</p>
-                : <p className="text-[11px] text-rose-600 -mt-1 mb-3">Not recognised. The Super Admin must create this user ID first.</p>
-          )}
           {mode === "reset" ? (<>
-            <div className="block mb-3"><span className="block text-xs font-medium text-slate-600 mb-1">Security Question</span><div className="border border-slate-200 rounded-lg px-3 py-2 text-sm bg-slate-50 text-slate-700 min-h-[38px]">{target?.question || (userId ? "(user not found or not registered)" : "Enter user ID first")}</div></div>
+            <div className="block mb-3"><span className="block text-xs font-medium text-slate-600 mb-1">Security Question</span><div className="border border-slate-200 rounded-lg px-3 py-2 text-sm bg-slate-50 text-slate-700 min-h-[38px]">{target?.question || (userId ? "(no security question on file — ask the Super Admin)" : "Enter user ID first")}</div></div>
             <label className="block mb-3"><span className="block text-xs font-medium text-slate-600 mb-1">Your Answer</span><input value={answer} onChange={(e) => setAnswer(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" /></label>
             <label className="block mb-3"><span className="block text-xs font-medium text-slate-600 mb-1">New Password</span><input type="password" value={newPw} onChange={(e) => setNewPw(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" /></label>
             <label className="block mb-3"><span className="block text-xs font-medium text-slate-600 mb-1">Confirm New Password</span><input type="password" value={newPw2} onChange={(e) => setNewPw2(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" /></label>
@@ -2033,12 +2015,13 @@ function AuthScreen({ users, addUser, tryLogin, registerUser, resetPassword }) {
           </>)}
           {err && <p className="text-xs text-rose-600 mb-3">{err}</p>}
           <button disabled={busy} onClick={submit} className="w-full bg-slate-900 hover:bg-slate-700 disabled:opacity-50 text-white text-sm font-medium py-2.5 rounded-lg tracking-wide shadow-sm">{busy ? "…" : cta}</button>
-          {hasUsers && (<div className="mt-4 flex items-center justify-between text-xs">
-            <button onClick={() => goto("landing")} className="text-slate-500 hover:underline">← Back</button>
-            {mode !== "reset" && <button onClick={() => goto("reset")} className="text-blue-700 hover:underline">Forgot password?</button>}
+          {hasUsers && mode === "reset" && (<div className="mt-4 text-xs text-center">
+            <button onClick={() => goto("signin")} className="text-slate-500 hover:underline">← Back to sign in</button>
           </div>)}
-          <p className="text-[10px] text-slate-400 mt-4 text-center">{mode === "register" ? "Only user IDs created by the Super Admin can register." : "Local lock screen · passwords & answers hashed (SHA-256)"}</p>
-          </>)}
+          {hasUsers && mode === "signin" && (<div className="mt-4 text-xs text-center">
+            <button onClick={() => goto("reset")} className="text-blue-700 hover:underline">Forgot password?</button>
+          </div>)}
+          <p className="text-[10px] text-slate-400 mt-4 text-center">Local lock screen · passwords &amp; answers hashed (SHA-256)</p>
         </div>
       </div>
     </div>
@@ -2112,70 +2095,47 @@ function ReleasePanel({ release, readOnly, currentHost, legacyHostOnly, publishR
   );
 }
 
-function UserPanel({ users, maxUsers, currentUser, isSuperAdmin, appUrl, saveAppUrl, referrerUrl, fallbackUrl, inviteUser, renameUser, removeUser, resetRegistration, ask }) {
+function UserPanel({ users, maxUsers, currentUser, isSuperAdmin, inviteUser, renameUser, removeUser, setUserPassword, ask }) {
+  const QUESTIONS = ["What was the name of your first pet?", "In what city were you born?", "What is your mother's maiden name?", "What was the name of your first school?", "What is your favorite book?", "Custom…"];
   const [showForm, setShowForm] = useState(false);
   const [userId, setUserId] = useState("");
   const [newName, setNewName] = useState("");
+  const [newPw, setNewPw] = useState("");
+  const [newPw2, setNewPw2] = useState("");
+  const [qChoice, setQChoice] = useState(QUESTIONS[0]);
+  const [question, setQuestion] = useState(QUESTIONS[0]);
+  const [answer, setAnswer] = useState("");
   const [editing, setEditing] = useState(null);
+  const [pwFor, setPwFor] = useState(null);     // userId whose password is being set
+  const [pwValue, setPwValue] = useState("");
+  const [pwErr, setPwErr] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
-  const [inviteFor, setInviteFor] = useState(null);
-  const [copied, setCopied] = useState("");
   const canAdd = isSuperAdmin && users.length < maxUsers;
-  const [urlDraft, setUrlDraft] = useState(appUrl || "");
-  const [showUrlEdit, setShowUrlEdit] = useState(false);
-  const clean = (u) => ((u || "").split("#")[0].split("?")[0]);
-  const httpish = (u) => /^https?:\/\//i.test(u || "");
-  const detected = httpish(referrerUrl) ? clean(referrerUrl) : httpish(fallbackUrl) ? clean(fallbackUrl) : "";
-  const baseUrl = appUrl ? clean(appUrl) : detected;
-  const urlSource = appUrl ? "set manually" : httpish(referrerUrl) ? "detected automatically" : detected ? "this page" : "unavailable";
-  const looksGenerated = (u) => {
-    u = u || "";
-    if (/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}/i.test(u)) return true;             // uuid path
-    const seg = (u.split("?")[0].split("#")[0].split("/").filter(Boolean).pop() || "");
-    if (seg.length >= 16 && /[a-z]/.test(seg) && /[A-Z]/.test(seg)) return true;  // mixed-case id
-    if (/^[0-9a-f]{24,}$/i.test(seg)) return true;                               // long hex id
-    return false;
-  };
-  const suspectUrl = !!appUrl && !looksGenerated(appUrl);
-  const linkFor = (id) => (baseUrl ? `${baseUrl}?register=${encodeURIComponent(id)}` : "");
-  const messageFor = (u) => [
-    `Hello${u.name ? " " + u.name : ""},`,
-    "",
-    "An account has been created for you on the XYZ Financial Report.",
-    "",
-    `User ID: ${u.userId}`,
-    baseUrl ? `Registration link: ${linkFor(u.userId)}` : "Registration link: (ask the Super Admin for the app address)",
-    "",
-    "Open the link, choose Register, enter the user ID above, then set your own password and security question.",
-    "Nobody else can see your password, including the Super Admin.",
-    "",
-    "If the page opens on Sign in instead of Register, click Register and type the user ID manually.",
-  ].join("\n");
-  const mailtoFor = (u) => {
-    const to = u.userId.includes("@") ? encodeURIComponent(u.userId) : "";
-    return `mailto:${to}?subject=${encodeURIComponent("Your access to XYZ Financial Report")}&body=${encodeURIComponent(messageFor(u))}`;
-  };
-  const copy = async (text, tag) => {
-    try { await navigator.clipboard.writeText(text); setCopied(tag); setTimeout(() => setCopied(""), 2500); }
-    catch (e) { setCopied("manual"); }
-  };
-  const pending = users.filter((u) => !u.registered).length;
   const canRename = (u) => isSuperAdmin || u.userId === currentUser;
+  const resetForm = () => { setUserId(""); setNewName(""); setNewPw(""); setNewPw2(""); setAnswer(""); setQChoice(QUESTIONS[0]); setQuestion(QUESTIONS[0]); setErr(""); };
   const submit = async () => {
     setErr(""); setBusy(true);
     try {
       if (!userId.trim()) { setErr("Choose a user ID."); return; }
-      const res = await inviteUser(userId.trim(), newName);
+      if (newPw.length < 6) { setErr("Set a password of at least 6 characters."); return; }
+      if (newPw !== newPw2) { setErr("Passwords do not match."); return; }
+      const res = await inviteUser(userId.trim(), newName, newPw, question.trim(), answer);
       if (!res.ok) { setErr(res.error); return; }
-      setInviteFor(userId.trim());
-      setUserId(""); setNewName(""); setShowForm(false);
+      resetForm(); setShowForm(false);
     } finally { setBusy(false); }
+  };
+  const savePassword = async () => {
+    setPwErr("");
+    if (pwValue.length < 6) { setPwErr("Password must be at least 6 characters."); return; }
+    const res = await setUserPassword(pwFor, pwValue);
+    if (!res.ok) { setPwErr(res.error); return; }
+    setPwFor(null); setPwValue("");
   };
   const saveName = () => { if (editing) renameUser(editing.userId, editing.name); setEditing(null); };
   return (
     <div>
-      <h2 className="font-serif text-lg mb-4">Users ({users.length}/{maxUsers}){pending > 0 && <span className="ml-2 text-[10px] uppercase tracking-[0.14em] text-amber-700 font-sans">{pending} awaiting registration</span>}</h2>
+      <h2 className="font-serif text-lg mb-4">Users ({users.length}/{maxUsers})</h2>
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 mb-4 overflow-x-auto">
         <table className="w-full text-sm min-w-[720px]">
           <thead className="bg-slate-50 text-xs uppercase text-slate-500">
@@ -2215,18 +2175,13 @@ function UserPanel({ users, maxUsers, currentUser, isSuperAdmin, appUrl, saveApp
                   <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium ring-1 ring-inset whitespace-nowrap ${u.role === SUPER ? "bg-slate-900 text-white ring-slate-900" : "bg-slate-100 text-slate-600 ring-slate-500/20"}`}>{roleLabel(u.role)}</span>
                 </td>
                 <td className="px-4 py-2">
-                  {u.registered ? (<>
-                    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium ring-1 ring-inset bg-emerald-50 text-emerald-700 ring-emerald-600/20"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>Registered</span>
-                    <span className="block text-[10px] text-slate-400 mt-0.5">{u.question || "—"}</span>
-                  </>) : (
-                    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium ring-1 ring-inset bg-amber-50 text-amber-700 ring-amber-600/20"><span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>Pending registration</span>
-                  )}
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium ring-1 ring-inset bg-emerald-50 text-emerald-700 ring-emerald-600/20"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>Active</span>
+                  <span className="block text-[10px] text-slate-400 mt-0.5">{u.question ? "Reset Q: " + u.question : "No reset question"}</span>
                 </td>
                 <td className="px-4 py-2 text-right whitespace-nowrap">
-                  {isSuperAdmin && !u.registered && <button onClick={() => setInviteFor(inviteFor === u.userId ? null : u.userId)} className="text-slate-900 font-medium text-xs mr-3">{inviteFor === u.userId ? "Hide invite" : "Invite"}</button>}
                   {canRename(u) && (!editing || editing.userId !== u.userId) && <button onClick={() => setEditing({ userId: u.userId, name: u.name || "" })} className="text-blue-700 text-xs mr-3">Rename</button>}
                   {isSuperAdmin && u.userId !== currentUser && u.role !== SUPER ? (<>
-                    {u.registered && <button onClick={() => ask(`Reset registration for "${u.name || u.userId}"? Their password is cleared and they must register again.`, () => resetRegistration(u.userId))} className="text-amber-700 text-xs mr-3">Reset</button>}
+                    <button onClick={() => { setPwFor(pwFor === u.userId ? null : u.userId); setPwValue(""); setPwErr(""); }} className="text-amber-700 text-xs mr-3">{pwFor === u.userId ? "Cancel" : "Set password"}</button>
                     <button onClick={() => ask(`Remove "${u.name || u.userId}" (${u.userId})? They will lose access.`, () => removeUser(u.userId))} className="text-rose-600 text-xs">Remove</button>
                   </>) : (!canRename(u) && <span className="text-xs text-slate-300">—</span>)}
                 </td>
@@ -2235,98 +2190,24 @@ function UserPanel({ users, maxUsers, currentUser, isSuperAdmin, appUrl, saveApp
           </tbody>
         </table>
       </div>
-      {isSuperAdmin && inviteFor && (() => {
-        const u = users.find((x) => x.userId === inviteFor);
+      {isSuperAdmin && pwFor && (() => {
+        const u = users.find((x) => x.userId === pwFor);
         if (!u) return null;
-        const link = linkFor(u.userId);
         return (
           <div className="bg-white rounded-xl shadow-sm border border-slate-300 p-4 mb-4">
             <div className="flex items-baseline justify-between gap-2 mb-1">
-              <h3 className="text-sm font-semibold">Registration invite — {u.name || u.userId}</h3>
-              <button onClick={() => setInviteFor(null)} className="text-slate-400 hover:text-slate-600 text-xs">Close ✕</button>
+              <h3 className="text-sm font-semibold">Set password — {u.name || u.userId}</h3>
+              <button onClick={() => { setPwFor(null); setPwValue(""); setPwErr(""); }} className="text-slate-400 hover:text-slate-600 text-xs">Close ✕</button>
             </div>
-            <p className="text-xs text-slate-500 mb-3">The app cannot send email itself. Use <b>Open in email</b> to hand a ready-made message to your own mail client, or copy the link and send it however you prefer.</p>
-            {!baseUrl && <p className="text-xs text-rose-600 mb-3">Set the app address below first, otherwise the invite has no link.</p>}
-            <label className="block mb-3"><span className="block text-xs text-slate-500 mb-1">Registration link</span>
-              <div className="flex gap-2">
-                <input readOnly value={link || "(no app address set)"} onFocus={(e) => e.target.select()} className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-xs bg-slate-50 text-slate-600" />
-                <button disabled={!link} onClick={() => copy(link, "link")} className="bg-slate-900 hover:bg-slate-700 disabled:opacity-40 text-white text-xs px-3 rounded-lg whitespace-nowrap">{copied === "link" ? "Copied" : "Copy"}</button>
-              </div>
-            </label>
-            <label className="block mb-3"><span className="block text-xs text-slate-500 mb-1">Message</span>
-              <textarea readOnly rows={8} value={messageFor(u)} onFocus={(e) => e.target.select()} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-xs bg-slate-50 text-slate-600 font-mono leading-relaxed" />
-            </label>
-            {copied === "manual" && <p className="text-[11px] text-amber-700 mb-2">Copying was blocked by the browser — select the text above and copy manually.</p>}
-            <div className="flex flex-wrap gap-2">
-              <a href={mailtoFor(u)} className="bg-slate-900 hover:bg-slate-700 text-white text-xs px-4 py-2 rounded-lg shadow-sm inline-flex items-center gap-2">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/></svg>
-                Open in email
-              </a>
-              <button onClick={() => copy(messageFor(u), "msg")} className="border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs px-4 py-2 rounded-lg">{copied === "msg" ? "Message copied" : "Copy message"}</button>
+            <p className="text-xs text-slate-500 mb-3">Set or replace this user's password. They sign in with their user ID and the password you set here — there is no self-registration.</p>
+            <div className="flex flex-wrap gap-2 items-end">
+              <label className="block flex-1 min-w-[200px]"><span className="block text-xs text-slate-500 mb-1">New password</span><input autoFocus type="password" value={pwValue} onChange={(e) => setPwValue(e.target.value)} onKeyDown={(e) => e.key === "Enter" && savePassword()} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" placeholder="At least 6 characters" /></label>
+              <button onClick={savePassword} className="bg-slate-900 hover:bg-slate-700 text-white text-sm px-4 py-2 rounded-lg shadow-sm">Save password</button>
             </div>
-            {!u.userId.includes("@") && <p className="text-[10px] text-slate-400 mt-3">This user ID is not an email address, so the message opens with an empty recipient — add it in your mail client.</p>}
+            {pwErr && <p className="text-xs text-rose-600 mt-2">{pwErr}</p>}
           </div>
         );
       })()}
-
-      {isSuperAdmin && (
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 mb-4">
-          <div className="flex items-baseline justify-between gap-2 mb-1">
-            <h3 className="text-sm font-semibold">Registration links</h3>
-            <span className="text-[10px] uppercase tracking-[0.14em] text-slate-400">Super Admin only</span>
-          </div>
-          <p className="text-xs text-slate-500 mb-3">Generated automatically for every user awaiting registration. Share a link and the recipient sets their own password — these are visible here only.</p>
-
-          <div className="border border-slate-200 rounded-lg overflow-hidden mb-3">
-            <div className="px-3 py-2 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2">
-              <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-[0.14em]">App address</span>
-              <span className="flex items-center gap-2 text-[10px] text-slate-400">
-                <span className={baseUrl ? "" : "text-rose-500"}>{urlSource}</span>
-                {baseUrl && <a href={baseUrl} target="_blank" rel="noreferrer" className="text-blue-700 hover:underline">Test</a>}
-                <button onClick={() => { setUrlDraft(appUrl || baseUrl || ""); setShowUrlEdit(!showUrlEdit); }} className="text-blue-700 hover:underline">{showUrlEdit ? "Cancel" : "Change"}</button>
-              </span>
-            </div>
-            {showUrlEdit ? (
-              <div className="px-3 py-2.5 flex flex-wrap gap-2 items-end">
-                <label className="block flex-1 min-w-[200px]"><span className="block text-xs text-slate-500 mb-1">Published URL</span><input autoFocus value={urlDraft} onChange={(e) => setUrlDraft(e.target.value)} placeholder="https://…" className="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs" /></label>
-                <button onClick={() => { saveAppUrl(urlDraft); setShowUrlEdit(false); }} className="bg-slate-900 hover:bg-slate-700 text-white text-xs px-4 py-2 rounded-lg shadow-sm">Save</button>
-                {appUrl && <button onClick={() => { saveAppUrl(""); setUrlDraft(""); setShowUrlEdit(false); }} className="border border-slate-300 text-slate-600 text-xs px-3 py-2 rounded-lg">Clear · use detected</button>}
-              </div>
-            ) : (
-              <>
-                <p className="px-3 py-2.5 text-xs text-slate-600 break-all">{baseUrl || "Could not determine the address — use Change to paste the published link."}</p>
-                {suspectUrl && (
-                  <p className="px-3 py-2 bg-amber-50 border-t border-amber-200 text-[11px] text-amber-800">
-                    This does not look like a generated link. Published addresses end in a long random ID — you cannot choose the wording. Click <b>Publish</b> in the artifact toolbar, copy the link it gives you, and paste that here. Press <b>Test</b> to check it opens.
-                  </p>
-                )}
-              </>
-            )}
-          </div>
-
-          {users.filter((u) => !u.registered).length === 0 ? (
-            <p className="text-xs text-slate-400 italic">Every user has registered. Links appear here as soon as you create a user ID, or after you Reset an existing one.</p>
-          ) : (
-            <div className="space-y-2">
-              {users.filter((u) => !u.registered).map((u) => (
-                <div key={u.userId} className="border border-slate-200 rounded-lg p-2.5">
-                  <div className="flex flex-wrap items-baseline justify-between gap-2 mb-1.5">
-                    <span className="text-xs font-medium text-slate-800">{u.name || u.userId}<span className="text-slate-400 font-normal ml-2">{u.userId}</span></span>
-                    <span className="text-[10px] uppercase tracking-[0.14em] text-amber-700">Awaiting registration</span>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    <input readOnly value={linkFor(u.userId) || "(no app address)"} onFocus={(e) => e.target.select()} className="flex-1 min-w-[180px] border border-slate-200 rounded-lg px-2.5 py-1.5 text-[11px] bg-slate-50 text-slate-600" />
-                    <button disabled={!baseUrl} onClick={() => copy(linkFor(u.userId), "l" + u.userId)} className="bg-slate-900 hover:bg-slate-700 disabled:opacity-40 text-white text-xs px-3 py-1.5 rounded-lg whitespace-nowrap">{copied === "l" + u.userId ? "Copied" : "Copy link"}</button>
-                    <a href={mailtoFor(u)} className="border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs px-3 py-1.5 rounded-lg whitespace-nowrap">Email</a>
-                    <button onClick={() => setInviteFor(inviteFor === u.userId ? null : u.userId)} className="text-blue-700 text-xs px-2 whitespace-nowrap">{inviteFor === u.userId ? "Hide" : "Message"}</button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-          <p className="text-[10px] text-slate-400 mt-3">The link pre-fills the user ID on the Register tab. It is a convenience, not a credential — anyone registering still needs a user ID you created, and only unregistered IDs can be claimed.</p>
-        </div>
-      )}
 
       {!isSuperAdmin ? (
         <div className="bg-slate-50 rounded-xl border border-slate-200 p-4">
@@ -2339,21 +2220,30 @@ function UserPanel({ users, maxUsers, currentUser, isSuperAdmin, appUrl, saveApp
         ) : (
           <div>
             <h3 className="text-sm font-semibold mb-1">Create User ID</h3>
-            <p className="text-xs text-slate-500 mb-3">New accounts are always <b>Admin</b>. The user ID (email) is permanent — the display name can be changed at any time. The person then sets their own password and security question via <b>Register</b> on the sign-in screen.</p>
+            <p className="text-xs text-slate-500 mb-3">New accounts are always <b>Admin</b>. You set the user ID and its <b>password</b> here — the user signs in with them directly; there is no self-registration. The user ID (email) is permanent; the display name can be changed later. A security question is optional and only enables self-service password reset.</p>
             <div className="flex flex-wrap gap-2 items-end mb-3">
-              <label className="block flex-1 min-w-[140px]"><span className="block text-xs text-slate-500 mb-1">User ID / email</span><input autoFocus value={userId} onChange={(e) => setUserId(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submit(); }} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" placeholder="e.g. operations@vrd.ae" /></label>
-              <label className="block flex-1 min-w-[140px]"><span className="block text-xs text-slate-500 mb-1">Name <span className="text-slate-400">(optional)</span></span><input value={newName} onChange={(e) => setNewName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submit(); }} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" placeholder="e.g. Operations" /></label>
+              <label className="block flex-1 min-w-[140px]"><span className="block text-xs text-slate-500 mb-1">User ID / email</span><input autoFocus value={userId} onChange={(e) => setUserId(e.target.value)} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" placeholder="e.g. operations@vrd.ae" /></label>
+              <label className="block flex-1 min-w-[140px]"><span className="block text-xs text-slate-500 mb-1">Name <span className="text-slate-400">(optional)</span></span><input value={newName} onChange={(e) => setNewName(e.target.value)} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" placeholder="e.g. Operations" /></label>
               <label className="block"><span className="block text-xs text-slate-500 mb-1">Type</span><div className="border border-slate-200 rounded-lg px-3 py-2 text-sm bg-slate-50 text-slate-500">Admin</div></label>
+            </div>
+            <div className="flex flex-wrap gap-2 items-end mb-3">
+              <label className="block flex-1 min-w-[140px]"><span className="block text-xs text-slate-500 mb-1">Password</span><input type="password" value={newPw} onChange={(e) => setNewPw(e.target.value)} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" placeholder="At least 6 characters" /></label>
+              <label className="block flex-1 min-w-[140px]"><span className="block text-xs text-slate-500 mb-1">Confirm Password</span><input type="password" value={newPw2} onChange={(e) => setNewPw2(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submit(); }} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" /></label>
+            </div>
+            <div className="flex flex-wrap gap-2 items-end mb-3">
+              <label className="block flex-1 min-w-[180px]"><span className="block text-xs text-slate-500 mb-1">Security Question <span className="text-slate-400">(optional)</span></span><select value={qChoice} onChange={(e) => { setQChoice(e.target.value); setQuestion(e.target.value === "Custom…" ? "" : e.target.value); }} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm">{QUESTIONS.map((q) => <option key={q}>{q}</option>)}</select></label>
+              {qChoice === "Custom…" && <label className="block flex-1 min-w-[140px]"><span className="block text-xs text-slate-500 mb-1">Custom question</span><input value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="Your security question" className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" /></label>}
+              <label className="block flex-1 min-w-[140px]"><span className="block text-xs text-slate-500 mb-1">Answer <span className="text-slate-400">(optional)</span></span><input value={answer} onChange={(e) => setAnswer(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submit(); }} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" /></label>
             </div>
             {err && <p className="text-xs text-rose-600 mb-2">{err}</p>}
             <div className="flex gap-2">
               <button disabled={busy} onClick={submit} className="flex-1 bg-slate-900 hover:bg-slate-700 disabled:opacity-50 text-white py-2 rounded-lg text-sm font-medium shadow-sm">Create User ID</button>
-              <button onClick={() => { setShowForm(false); setErr(""); }} className="px-4 py-2 rounded-lg border border-slate-300 text-slate-600 text-sm">Cancel</button>
+              <button onClick={() => { setShowForm(false); resetForm(); }} className="px-4 py-2 rounded-lg border border-slate-300 text-slate-600 text-sm">Cancel</button>
             </div>
           </div>
         )}
         {!canAdd && !showForm && <p className="text-xs text-slate-400 mt-2">Maximum {maxUsers} users reached.</p>}
-        {canAdd && !showForm && <p className="text-xs text-slate-400 mt-2">Names are editable; user IDs are not. The Super Admin account cannot be removed or reset.</p>}
+        {canAdd && !showForm && <p className="text-xs text-slate-400 mt-2">Names are editable; user IDs are not. The Super Admin account cannot be removed or have its password set by others.</p>}
       </div>
       )}
     </div>

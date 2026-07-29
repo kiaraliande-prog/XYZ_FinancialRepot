@@ -805,7 +805,10 @@ function App() {
     };
   };
   const isSuperAdmin = users.find(u => u.userId === currentUser)?.role === SUPER;
-  const inviteUser = async (userId, name) => {
+  // Self-registration is disabled: the Super Admin creates each user ID together
+  // with its password (and, optionally, a security question for self-service
+  // password reset). Accounts are therefore created already-registered.
+  const inviteUser = async (userId, name, password, question, answer) => {
     userId = (userId || "").trim();
     if (!isSuperAdmin) return {
       ok: false,
@@ -815,6 +818,10 @@ function App() {
       ok: false,
       error: "Choose a user ID."
     };
+    if ((password || "").length < 6) return {
+      ok: false,
+      error: "Set a password of at least 6 characters for the new user."
+    };
     if (users.length >= MAX_USERS) return {
       ok: false,
       error: `Maximum ${MAX_USERS} users reached.`
@@ -823,12 +830,49 @@ function App() {
       ok: false,
       error: "That user ID already exists."
     };
+    const h = await hash(password);
+    const ah = answer ? await hash((answer || "").toLowerCase().trim()) : "";
     await persistUsers([...users, {
       userId,
       name: (name || "").trim(),
       role: "admin",
-      registered: false
+      registered: true,
+      hash: h,
+      question: (question || "").trim(),
+      answerHash: ah
     }]);
+    return {
+      ok: true
+    };
+  };
+  // Super Admin sets or replaces a user's password directly (replaces the old
+  // "reset registration" flow, which relied on the user re-registering).
+  const setUserPassword = async (userId, password) => {
+    if (!isSuperAdmin) return {
+      ok: false,
+      error: "Only the Super Admin can set passwords."
+    };
+    if (userId === currentUser) return {
+      ok: false,
+      error: "Use Forgot password on the sign-in screen to change your own password."
+    };
+    const idx = users.findIndex(x => x.userId === userId);
+    if (idx < 0) return {
+      ok: false,
+      error: "No such user."
+    };
+    if ((password || "").length < 6) return {
+      ok: false,
+      error: "Password must be at least 6 characters."
+    };
+    const h = await hash(password);
+    const next = [...users];
+    next[idx] = {
+      ...next[idx],
+      hash: h,
+      registered: true
+    };
+    await persistUsers(next);
     return {
       ok: true
     };
@@ -1925,7 +1969,6 @@ function App() {
     users: users,
     addUser: addUser,
     tryLogin: tryLogin,
-    registerUser: registerUser,
     resetPassword: resetPassword
   });
   if (!loaded) return /*#__PURE__*/React.createElement("div", {
@@ -3120,14 +3163,10 @@ function App() {
     maxUsers: MAX_USERS,
     currentUser: currentUser,
     isSuperAdmin: isSuperAdmin,
-    appUrl: appUrl,
-    saveAppUrl: saveAppUrl,
-    referrerUrl: refPrint(),
-    fallbackUrl: release && release.href || hrefPrint(),
     inviteUser: inviteUser,
     renameUser: renameUser,
     removeUser: removeUser,
-    resetRegistration: resetRegistration,
+    setUserPassword: setUserPassword,
     ask: ask
   }), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h2", {
     className: "font-serif text-lg mb-4"
@@ -4243,13 +4282,14 @@ function AuthScreen({
   users,
   addUser,
   tryLogin,
-  registerUser,
   resetPassword
 }) {
   const hasUsers = users.length > 0;
-  const invited = urlParam("register");
-  const [mode, setMode] = useState(hasUsers ? invited ? "register" : "landing" : "firstSetup");
-  const [userId, setUserId] = useState(hasUsers && invited ? invited : "");
+  // Self-registration is disabled. Only the initial Super Admin bootstrap
+  // (when no accounts exist yet), signing in, and self-service password reset
+  // remain — every other account is created by the Super Admin in Settings.
+  const [mode, setMode] = useState(hasUsers ? "signin" : "firstSetup");
+  const [userId, setUserId] = useState("");
   const [pw, setPw] = useState("");
   const [pw2, setPw2] = useState("");
   const QUESTIONS = ["What was the name of your first pet?", "In what city were you born?", "What is your mother's maiden name?", "What was the name of your first school?", "What is your favorite book?", "Custom…"];
@@ -4274,8 +4314,7 @@ function AuthScreen({
     setMode(m);
   };
   const target = users.find(u => u.userId.toLowerCase() === userId.trim().toLowerCase());
-  const awaiting = users.filter(u => !u.registered).length;
-  const needsCreds = mode === "firstSetup" || mode === "register";
+  const needsCreds = mode === "firstSetup";
   const submit = async () => {
     setErr("");
     setBusy(true);
@@ -4286,33 +4325,6 @@ function AuthScreen({
           return;
         }
         const res = await tryLogin(userId.trim(), pw);
-        if (!res.ok) setErr(res.error);
-      } else if (mode === "register") {
-        if (!userId.trim()) {
-          setErr("Enter the user ID the Super Admin created for you.");
-          return;
-        }
-        if (!target) {
-          setErr("No such user ID. Only user IDs created by the Super Admin can register.");
-          return;
-        }
-        if (target.registered) {
-          setErr("That user ID is already registered — sign in instead.");
-          return;
-        }
-        if (pw.length < 6) {
-          setErr("Password must be at least 6 characters.");
-          return;
-        }
-        if (pw !== pw2) {
-          setErr("Passwords do not match.");
-          return;
-        }
-        if (!question.trim() || !answer.trim()) {
-          setErr("Pick a security question and answer.");
-          return;
-        }
-        const res = await registerUser(userId.trim(), pw, question.trim(), answer);
         if (!res.ok) setErr(res.error);
       } else if (mode === "firstSetup") {
         if (!userId.trim()) {
@@ -4353,8 +4365,8 @@ function AuthScreen({
       setBusy(false);
     }
   };
-  const subtitle = mode === "firstSetup" ? "Super Admin Setup" : mode === "landing" ? "Sign in or Register" : mode === "register" ? "Register Account" : mode === "reset" ? "Reset Password" : "Secure Sign-in";
-  const cta = mode === "reset" ? "RESET PASSWORD" : mode === "register" ? "REGISTER & SIGN IN" : mode === "firstSetup" ? "CREATE & SIGN IN" : "SIGN IN";
+  const subtitle = mode === "firstSetup" ? "Super Admin Setup" : mode === "reset" ? "Reset Password" : "Secure Sign-in";
+  const cta = mode === "reset" ? "RESET PASSWORD" : mode === "firstSetup" ? "CREATE & SIGN IN" : "SIGN IN";
   return /*#__PURE__*/React.createElement("div", {
     className: "min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 flex items-center justify-center p-6"
   }, /*#__PURE__*/React.createElement("div", {
@@ -4367,47 +4379,13 @@ function AuthScreen({
     className: "font-serif text-lg tracking-wide"
   }, "XYZ Financial Report"), /*#__PURE__*/React.createElement("p", {
     className: "text-[10px] uppercase tracking-[0.18em] text-slate-400"
-  }, subtitle))), (mode === "signin" || mode === "register" || mode === "firstSetup") && /*#__PURE__*/React.createElement("div", {
-    className: "grid grid-cols-2 border-b border-slate-200"
-  }, [["signin", "Sign in"], ["register", "Register"]].map(([k, l]) => {
-    const on = k === "signin" ? mode === "signin" : mode === "register" || mode === "firstSetup";
-    return /*#__PURE__*/React.createElement("button", {
-      key: k,
-      onClick: () => goto(k === "register" && !hasUsers ? "firstSetup" : k),
-      className: `py-3 text-[11px] font-medium uppercase tracking-[0.14em] transition-colors ${on ? "text-slate-900 border-b-2 border-slate-900" : "text-slate-400 hover:text-slate-700"}`
-    }, l);
-  })), /*#__PURE__*/React.createElement("div", {
+  }, subtitle))), /*#__PURE__*/React.createElement("div", {
     className: "p-6"
-  }, mode === "landing" ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("p", {
-    className: "text-sm text-slate-600 mb-1"
-  }, "Welcome."), /*#__PURE__*/React.createElement("p", {
-    className: "text-xs text-slate-500 mb-5"
-  }, "Sign in if you already have an account, or register a user ID the Super Admin has created for you."), /*#__PURE__*/React.createElement("button", {
-    onClick: () => goto("signin"),
-    className: "w-full bg-slate-900 hover:bg-slate-700 text-white text-sm font-medium py-2.5 rounded-lg tracking-wide shadow-sm"
-  }, "SIGN IN"), /*#__PURE__*/React.createElement("button", {
-    disabled: !awaiting,
-    onClick: () => goto("register"),
-    title: awaiting ? "" : "No user ID is waiting to be registered",
-    className: `w-full mt-2.5 text-sm font-medium py-2.5 rounded-lg tracking-wide border ${awaiting ? "border-slate-300 text-slate-800 hover:bg-slate-50" : "border-slate-200 text-slate-300 cursor-not-allowed"}`
-  }, "REGISTER"), /*#__PURE__*/React.createElement("p", {
-    className: `text-[11px] mt-3 text-center ${awaiting ? "text-emerald-700" : "text-slate-400"}`
-  }, awaiting ? `${awaiting} user ID${awaiting > 1 ? "s" : ""} awaiting registration.` : "Registration opens once the Super Admin creates a user ID for you."), /*#__PURE__*/React.createElement("div", {
-    className: "mt-4 text-center text-xs"
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: () => goto("reset"),
-    className: "text-blue-700 hover:underline"
-  }, "Forgot password?")), /*#__PURE__*/React.createElement("p", {
-    className: "text-[10px] text-slate-400 mt-4 text-center"
-  }, "Local lock screen \xB7 passwords & answers hashed (SHA-256)")) : /*#__PURE__*/React.createElement(React.Fragment, null, mode === "signin" && !hasUsers && /*#__PURE__*/React.createElement("p", {
-    className: "text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5 mb-4"
-  }, "No accounts exist yet \u2014 use ", /*#__PURE__*/React.createElement("b", null, "Register"), " to set up the Super Admin account."), mode === "firstSetup" && /*#__PURE__*/React.createElement("p", {
+  }, mode === "firstSetup" && /*#__PURE__*/React.createElement("p", {
     className: "text-xs text-slate-500 mb-4"
-  }, "Set up the Super Admin account \u2014 yours, and the only one. All further user IDs are Admins created by you in Settings, and they register their own password here."), mode === "register" && /*#__PURE__*/React.createElement("p", {
+  }, "Set up the Super Admin account \u2014 yours, and the only one. All further user IDs (and their passwords) are created by you in Settings; there is no self-registration."), mode === "reset" && /*#__PURE__*/React.createElement("p", {
     className: "text-xs text-slate-500 mb-4"
-  }, "Enter a user ID created for you by the Super Admin, then set your own password and security question."), mode === "reset" && /*#__PURE__*/React.createElement("p", {
-    className: "text-xs text-slate-500 mb-4"
-  }, "Enter your user ID, then answer your security question to set a new password."), /*#__PURE__*/React.createElement("label", {
+  }, "Enter your user ID, then answer your security question to set a new password. If no security question was set, ask the Super Admin to set a new password for you."), /*#__PURE__*/React.createElement("label", {
     className: "block mb-3"
   }, /*#__PURE__*/React.createElement("span", {
     className: "block text-xs font-medium text-slate-600 mb-1"
@@ -4418,19 +4396,13 @@ function AuthScreen({
     onKeyDown: e => e.key === "Enter" && submit(),
     className: "w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-100",
     placeholder: "e.g. AL1409"
-  })), mode === "register" && userId.trim() !== "" && (target && !target.registered ? /*#__PURE__*/React.createElement("p", {
-    className: "text-[11px] text-emerald-700 -mt-1 mb-3"
-  }, "User ID found \u2014 set your password below.") : target ? /*#__PURE__*/React.createElement("p", {
-    className: "text-[11px] text-amber-700 -mt-1 mb-3"
-  }, "Already registered \u2014 use Sign in.") : /*#__PURE__*/React.createElement("p", {
-    className: "text-[11px] text-rose-600 -mt-1 mb-3"
-  }, "Not recognised. The Super Admin must create this user ID first.")), mode === "reset" ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+  })), mode === "reset" ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     className: "block mb-3"
   }, /*#__PURE__*/React.createElement("span", {
     className: "block text-xs font-medium text-slate-600 mb-1"
   }, "Security Question"), /*#__PURE__*/React.createElement("div", {
     className: "border border-slate-200 rounded-lg px-3 py-2 text-sm bg-slate-50 text-slate-700 min-h-[38px]"
-  }, target?.question || (userId ? "(user not found or not registered)" : "Enter user ID first"))), /*#__PURE__*/React.createElement("label", {
+  }, target?.question || (userId ? "(no security question on file — ask the Super Admin)" : "Enter user ID first"))), /*#__PURE__*/React.createElement("label", {
     className: "block mb-3"
   }, /*#__PURE__*/React.createElement("span", {
     className: "block text-xs font-medium text-slate-600 mb-1"
@@ -4512,17 +4484,19 @@ function AuthScreen({
     disabled: busy,
     onClick: submit,
     className: "w-full bg-slate-900 hover:bg-slate-700 disabled:opacity-50 text-white text-sm font-medium py-2.5 rounded-lg tracking-wide shadow-sm"
-  }, busy ? "…" : cta), hasUsers && /*#__PURE__*/React.createElement("div", {
-    className: "mt-4 flex items-center justify-between text-xs"
+  }, busy ? "…" : cta), hasUsers && mode === "reset" && /*#__PURE__*/React.createElement("div", {
+    className: "mt-4 text-xs text-center"
   }, /*#__PURE__*/React.createElement("button", {
-    onClick: () => goto("landing"),
+    onClick: () => goto("signin"),
     className: "text-slate-500 hover:underline"
-  }, "\u2190 Back"), mode !== "reset" && /*#__PURE__*/React.createElement("button", {
+  }, "\u2190 Back to sign in")), hasUsers && mode === "signin" && /*#__PURE__*/React.createElement("div", {
+    className: "mt-4 text-xs text-center"
+  }, /*#__PURE__*/React.createElement("button", {
     onClick: () => goto("reset"),
     className: "text-blue-700 hover:underline"
   }, "Forgot password?")), /*#__PURE__*/React.createElement("p", {
     className: "text-[10px] text-slate-400 mt-4 text-center"
-  }, mode === "register" ? "Only user IDs created by the Super Admin can register." : "Local lock screen · passwords & answers hashed (SHA-256)")))));
+  }, "Local lock screen \xB7 passwords & answers hashed (SHA-256)"))));
 }
 function ReleasePanel({
   release,
@@ -4657,58 +4631,39 @@ function UserPanel({
   maxUsers,
   currentUser,
   isSuperAdmin,
-  appUrl,
-  saveAppUrl,
-  referrerUrl,
-  fallbackUrl,
   inviteUser,
   renameUser,
   removeUser,
-  resetRegistration,
+  setUserPassword,
   ask
 }) {
+  const QUESTIONS = ["What was the name of your first pet?", "In what city were you born?", "What is your mother's maiden name?", "What was the name of your first school?", "What is your favorite book?", "Custom…"];
   const [showForm, setShowForm] = useState(false);
   const [userId, setUserId] = useState("");
   const [newName, setNewName] = useState("");
+  const [newPw, setNewPw] = useState("");
+  const [newPw2, setNewPw2] = useState("");
+  const [qChoice, setQChoice] = useState(QUESTIONS[0]);
+  const [question, setQuestion] = useState(QUESTIONS[0]);
+  const [answer, setAnswer] = useState("");
   const [editing, setEditing] = useState(null);
+  const [pwFor, setPwFor] = useState(null); // userId whose password is being set
+  const [pwValue, setPwValue] = useState("");
+  const [pwErr, setPwErr] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
-  const [inviteFor, setInviteFor] = useState(null);
-  const [copied, setCopied] = useState("");
   const canAdd = isSuperAdmin && users.length < maxUsers;
-  const [urlDraft, setUrlDraft] = useState(appUrl || "");
-  const [showUrlEdit, setShowUrlEdit] = useState(false);
-  const clean = u => (u || "").split("#")[0].split("?")[0];
-  const httpish = u => /^https?:\/\//i.test(u || "");
-  const detected = httpish(referrerUrl) ? clean(referrerUrl) : httpish(fallbackUrl) ? clean(fallbackUrl) : "";
-  const baseUrl = appUrl ? clean(appUrl) : detected;
-  const urlSource = appUrl ? "set manually" : httpish(referrerUrl) ? "detected automatically" : detected ? "this page" : "unavailable";
-  const looksGenerated = u => {
-    u = u || "";
-    if (/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}/i.test(u)) return true; // uuid path
-    const seg = u.split("?")[0].split("#")[0].split("/").filter(Boolean).pop() || "";
-    if (seg.length >= 16 && /[a-z]/.test(seg) && /[A-Z]/.test(seg)) return true; // mixed-case id
-    if (/^[0-9a-f]{24,}$/i.test(seg)) return true; // long hex id
-    return false;
-  };
-  const suspectUrl = !!appUrl && !looksGenerated(appUrl);
-  const linkFor = id => baseUrl ? `${baseUrl}?register=${encodeURIComponent(id)}` : "";
-  const messageFor = u => [`Hello${u.name ? " " + u.name : ""},`, "", "An account has been created for you on the XYZ Financial Report.", "", `User ID: ${u.userId}`, baseUrl ? `Registration link: ${linkFor(u.userId)}` : "Registration link: (ask the Super Admin for the app address)", "", "Open the link, choose Register, enter the user ID above, then set your own password and security question.", "Nobody else can see your password, including the Super Admin.", "", "If the page opens on Sign in instead of Register, click Register and type the user ID manually."].join("\n");
-  const mailtoFor = u => {
-    const to = u.userId.includes("@") ? encodeURIComponent(u.userId) : "";
-    return `mailto:${to}?subject=${encodeURIComponent("Your access to XYZ Financial Report")}&body=${encodeURIComponent(messageFor(u))}`;
-  };
-  const copy = async (text, tag) => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(tag);
-      setTimeout(() => setCopied(""), 2500);
-    } catch (e) {
-      setCopied("manual");
-    }
-  };
-  const pending = users.filter(u => !u.registered).length;
   const canRename = u => isSuperAdmin || u.userId === currentUser;
+  const resetForm = () => {
+    setUserId("");
+    setNewName("");
+    setNewPw("");
+    setNewPw2("");
+    setAnswer("");
+    setQChoice(QUESTIONS[0]);
+    setQuestion(QUESTIONS[0]);
+    setErr("");
+  };
   const submit = async () => {
     setErr("");
     setBusy(true);
@@ -4717,18 +4672,38 @@ function UserPanel({
         setErr("Choose a user ID.");
         return;
       }
-      const res = await inviteUser(userId.trim(), newName);
+      if (newPw.length < 6) {
+        setErr("Set a password of at least 6 characters.");
+        return;
+      }
+      if (newPw !== newPw2) {
+        setErr("Passwords do not match.");
+        return;
+      }
+      const res = await inviteUser(userId.trim(), newName, newPw, question.trim(), answer);
       if (!res.ok) {
         setErr(res.error);
         return;
       }
-      setInviteFor(userId.trim());
-      setUserId("");
-      setNewName("");
+      resetForm();
       setShowForm(false);
     } finally {
       setBusy(false);
     }
+  };
+  const savePassword = async () => {
+    setPwErr("");
+    if (pwValue.length < 6) {
+      setPwErr("Password must be at least 6 characters.");
+      return;
+    }
+    const res = await setUserPassword(pwFor, pwValue);
+    if (!res.ok) {
+      setPwErr(res.error);
+      return;
+    }
+    setPwFor(null);
+    setPwValue("");
   };
   const saveName = () => {
     if (editing) renameUser(editing.userId, editing.name);
@@ -4736,9 +4711,7 @@ function UserPanel({
   };
   return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h2", {
     className: "font-serif text-lg mb-4"
-  }, "Users (", users.length, "/", maxUsers, ")", pending > 0 && /*#__PURE__*/React.createElement("span", {
-    className: "ml-2 text-[10px] uppercase tracking-[0.14em] text-amber-700 font-sans"
-  }, pending, " awaiting registration")), /*#__PURE__*/React.createElement("div", {
+  }, "Users (", users.length, "/", maxUsers, ")"), /*#__PURE__*/React.createElement("div", {
     className: "bg-white rounded-xl shadow-sm border border-slate-200 mb-4 overflow-x-auto"
   }, /*#__PURE__*/React.createElement("table", {
     className: "w-full text-sm min-w-[720px]"
@@ -4820,202 +4793,71 @@ function UserPanel({
     className: `inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium ring-1 ring-inset whitespace-nowrap ${u.role === SUPER ? "bg-slate-900 text-white ring-slate-900" : "bg-slate-100 text-slate-600 ring-slate-500/20"}`
   }, roleLabel(u.role))), /*#__PURE__*/React.createElement("td", {
     className: "px-4 py-2"
-  }, u.registered ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
+  }, /*#__PURE__*/React.createElement("span", {
     className: "inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium ring-1 ring-inset bg-emerald-50 text-emerald-700 ring-emerald-600/20"
   }, /*#__PURE__*/React.createElement("span", {
     className: "w-1.5 h-1.5 rounded-full bg-emerald-500"
-  }), "Registered"), /*#__PURE__*/React.createElement("span", {
+  }), "Active"), /*#__PURE__*/React.createElement("span", {
     className: "block text-[10px] text-slate-400 mt-0.5"
-  }, u.question || "—")) : /*#__PURE__*/React.createElement("span", {
-    className: "inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium ring-1 ring-inset bg-amber-50 text-amber-700 ring-amber-600/20"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "w-1.5 h-1.5 rounded-full bg-amber-500"
-  }), "Pending registration")), /*#__PURE__*/React.createElement("td", {
+  }, u.question ? "Reset Q: " + u.question : "No reset question")), /*#__PURE__*/React.createElement("td", {
     className: "px-4 py-2 text-right whitespace-nowrap"
-  }, isSuperAdmin && !u.registered && /*#__PURE__*/React.createElement("button", {
-    onClick: () => setInviteFor(inviteFor === u.userId ? null : u.userId),
-    className: "text-slate-900 font-medium text-xs mr-3"
-  }, inviteFor === u.userId ? "Hide invite" : "Invite"), canRename(u) && (!editing || editing.userId !== u.userId) && /*#__PURE__*/React.createElement("button", {
+  }, canRename(u) && (!editing || editing.userId !== u.userId) && /*#__PURE__*/React.createElement("button", {
     onClick: () => setEditing({
       userId: u.userId,
       name: u.name || ""
     }),
     className: "text-blue-700 text-xs mr-3"
-  }, "Rename"), isSuperAdmin && u.userId !== currentUser && u.role !== SUPER ? /*#__PURE__*/React.createElement(React.Fragment, null, u.registered && /*#__PURE__*/React.createElement("button", {
-    onClick: () => ask(`Reset registration for "${u.name || u.userId}"? Their password is cleared and they must register again.`, () => resetRegistration(u.userId)),
+  }, "Rename"), isSuperAdmin && u.userId !== currentUser && u.role !== SUPER ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      setPwFor(pwFor === u.userId ? null : u.userId);
+      setPwValue("");
+      setPwErr("");
+    },
     className: "text-amber-700 text-xs mr-3"
-  }, "Reset"), /*#__PURE__*/React.createElement("button", {
+  }, pwFor === u.userId ? "Cancel" : "Set password"), /*#__PURE__*/React.createElement("button", {
     onClick: () => ask(`Remove "${u.name || u.userId}" (${u.userId})? They will lose access.`, () => removeUser(u.userId)),
     className: "text-rose-600 text-xs"
   }, "Remove")) : !canRename(u) && /*#__PURE__*/React.createElement("span", {
     className: "text-xs text-slate-300"
-  }, "\u2014"))))))), isSuperAdmin && inviteFor && (() => {
-    const u = users.find(x => x.userId === inviteFor);
+  }, "\u2014"))))))), isSuperAdmin && pwFor && (() => {
+    const u = users.find(x => x.userId === pwFor);
     if (!u) return null;
-    const link = linkFor(u.userId);
     return /*#__PURE__*/React.createElement("div", {
       className: "bg-white rounded-xl shadow-sm border border-slate-300 p-4 mb-4"
     }, /*#__PURE__*/React.createElement("div", {
       className: "flex items-baseline justify-between gap-2 mb-1"
     }, /*#__PURE__*/React.createElement("h3", {
       className: "text-sm font-semibold"
-    }, "Registration invite \u2014 ", u.name || u.userId), /*#__PURE__*/React.createElement("button", {
-      onClick: () => setInviteFor(null),
+    }, "Set password \u2014 ", u.name || u.userId), /*#__PURE__*/React.createElement("button", {
+      onClick: () => {
+        setPwFor(null);
+        setPwValue("");
+        setPwErr("");
+      },
       className: "text-slate-400 hover:text-slate-600 text-xs"
     }, "Close \u2715")), /*#__PURE__*/React.createElement("p", {
       className: "text-xs text-slate-500 mb-3"
-    }, "The app cannot send email itself. Use ", /*#__PURE__*/React.createElement("b", null, "Open in email"), " to hand a ready-made message to your own mail client, or copy the link and send it however you prefer."), !baseUrl && /*#__PURE__*/React.createElement("p", {
-      className: "text-xs text-rose-600 mb-3"
-    }, "Set the app address below first, otherwise the invite has no link."), /*#__PURE__*/React.createElement("label", {
-      className: "block mb-3"
+    }, "Set or replace this user's password. They sign in with their user ID and the password you set here \u2014 there is no self-registration."), /*#__PURE__*/React.createElement("div", {
+      className: "flex flex-wrap gap-2 items-end"
+    }, /*#__PURE__*/React.createElement("label", {
+      className: "block flex-1 min-w-[200px]"
     }, /*#__PURE__*/React.createElement("span", {
       className: "block text-xs text-slate-500 mb-1"
-    }, "Registration link"), /*#__PURE__*/React.createElement("div", {
-      className: "flex gap-2"
-    }, /*#__PURE__*/React.createElement("input", {
-      readOnly: true,
-      value: link || "(no app address set)",
-      onFocus: e => e.target.select(),
-      className: "flex-1 border border-slate-200 rounded-lg px-3 py-2 text-xs bg-slate-50 text-slate-600"
-    }), /*#__PURE__*/React.createElement("button", {
-      disabled: !link,
-      onClick: () => copy(link, "link"),
-      className: "bg-slate-900 hover:bg-slate-700 disabled:opacity-40 text-white text-xs px-3 rounded-lg whitespace-nowrap"
-    }, copied === "link" ? "Copied" : "Copy"))), /*#__PURE__*/React.createElement("label", {
-      className: "block mb-3"
-    }, /*#__PURE__*/React.createElement("span", {
-      className: "block text-xs text-slate-500 mb-1"
-    }, "Message"), /*#__PURE__*/React.createElement("textarea", {
-      readOnly: true,
-      rows: 8,
-      value: messageFor(u),
-      onFocus: e => e.target.select(),
-      className: "w-full border border-slate-200 rounded-lg px-3 py-2 text-xs bg-slate-50 text-slate-600 font-mono leading-relaxed"
-    })), copied === "manual" && /*#__PURE__*/React.createElement("p", {
-      className: "text-[11px] text-amber-700 mb-2"
-    }, "Copying was blocked by the browser \u2014 select the text above and copy manually."), /*#__PURE__*/React.createElement("div", {
-      className: "flex flex-wrap gap-2"
-    }, /*#__PURE__*/React.createElement("a", {
-      href: mailtoFor(u),
-      className: "bg-slate-900 hover:bg-slate-700 text-white text-xs px-4 py-2 rounded-lg shadow-sm inline-flex items-center gap-2"
-    }, /*#__PURE__*/React.createElement("svg", {
-      width: "12",
-      height: "12",
-      viewBox: "0 0 24 24",
-      fill: "none",
-      stroke: "currentColor",
-      strokeWidth: "2",
-      strokeLinecap: "round",
-      strokeLinejoin: "round"
-    }, /*#__PURE__*/React.createElement("rect", {
-      x: "2",
-      y: "4",
-      width: "20",
-      height: "16",
-      rx: "2"
-    }), /*#__PURE__*/React.createElement("path", {
-      d: "m22 7-10 6L2 7"
-    })), "Open in email"), /*#__PURE__*/React.createElement("button", {
-      onClick: () => copy(messageFor(u), "msg"),
-      className: "border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs px-4 py-2 rounded-lg"
-    }, copied === "msg" ? "Message copied" : "Copy message")), !u.userId.includes("@") && /*#__PURE__*/React.createElement("p", {
-      className: "text-[10px] text-slate-400 mt-3"
-    }, "This user ID is not an email address, so the message opens with an empty recipient \u2014 add it in your mail client."));
-  })(), isSuperAdmin && /*#__PURE__*/React.createElement("div", {
-    className: "bg-white rounded-xl shadow-sm border border-slate-200 p-4 mb-4"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "flex items-baseline justify-between gap-2 mb-1"
-  }, /*#__PURE__*/React.createElement("h3", {
-    className: "text-sm font-semibold"
-  }, "Registration links"), /*#__PURE__*/React.createElement("span", {
-    className: "text-[10px] uppercase tracking-[0.14em] text-slate-400"
-  }, "Super Admin only")), /*#__PURE__*/React.createElement("p", {
-    className: "text-xs text-slate-500 mb-3"
-  }, "Generated automatically for every user awaiting registration. Share a link and the recipient sets their own password \u2014 these are visible here only."), /*#__PURE__*/React.createElement("div", {
-    className: "border border-slate-200 rounded-lg overflow-hidden mb-3"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "px-3 py-2 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "text-[10px] font-semibold text-slate-500 uppercase tracking-[0.14em]"
-  }, "App address"), /*#__PURE__*/React.createElement("span", {
-    className: "flex items-center gap-2 text-[10px] text-slate-400"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: baseUrl ? "" : "text-rose-500"
-  }, urlSource), baseUrl && /*#__PURE__*/React.createElement("a", {
-    href: baseUrl,
-    target: "_blank",
-    rel: "noreferrer",
-    className: "text-blue-700 hover:underline"
-  }, "Test"), /*#__PURE__*/React.createElement("button", {
-    onClick: () => {
-      setUrlDraft(appUrl || baseUrl || "");
-      setShowUrlEdit(!showUrlEdit);
-    },
-    className: "text-blue-700 hover:underline"
-  }, showUrlEdit ? "Cancel" : "Change"))), showUrlEdit ? /*#__PURE__*/React.createElement("div", {
-    className: "px-3 py-2.5 flex flex-wrap gap-2 items-end"
-  }, /*#__PURE__*/React.createElement("label", {
-    className: "block flex-1 min-w-[200px]"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "block text-xs text-slate-500 mb-1"
-  }, "Published URL"), /*#__PURE__*/React.createElement("input", {
-    autoFocus: true,
-    value: urlDraft,
-    onChange: e => setUrlDraft(e.target.value),
-    placeholder: "https://\u2026",
-    className: "w-full border border-slate-300 rounded-lg px-3 py-2 text-xs"
-  })), /*#__PURE__*/React.createElement("button", {
-    onClick: () => {
-      saveAppUrl(urlDraft);
-      setShowUrlEdit(false);
-    },
-    className: "bg-slate-900 hover:bg-slate-700 text-white text-xs px-4 py-2 rounded-lg shadow-sm"
-  }, "Save"), appUrl && /*#__PURE__*/React.createElement("button", {
-    onClick: () => {
-      saveAppUrl("");
-      setUrlDraft("");
-      setShowUrlEdit(false);
-    },
-    className: "border border-slate-300 text-slate-600 text-xs px-3 py-2 rounded-lg"
-  }, "Clear \xB7 use detected")) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("p", {
-    className: "px-3 py-2.5 text-xs text-slate-600 break-all"
-  }, baseUrl || "Could not determine the address — use Change to paste the published link."), suspectUrl && /*#__PURE__*/React.createElement("p", {
-    className: "px-3 py-2 bg-amber-50 border-t border-amber-200 text-[11px] text-amber-800"
-  }, "This does not look like a generated link. Published addresses end in a long random ID \u2014 you cannot choose the wording. Click ", /*#__PURE__*/React.createElement("b", null, "Publish"), " in the artifact toolbar, copy the link it gives you, and paste that here. Press ", /*#__PURE__*/React.createElement("b", null, "Test"), " to check it opens."))), users.filter(u => !u.registered).length === 0 ? /*#__PURE__*/React.createElement("p", {
-    className: "text-xs text-slate-400 italic"
-  }, "Every user has registered. Links appear here as soon as you create a user ID, or after you Reset an existing one.") : /*#__PURE__*/React.createElement("div", {
-    className: "space-y-2"
-  }, users.filter(u => !u.registered).map(u => /*#__PURE__*/React.createElement("div", {
-    key: u.userId,
-    className: "border border-slate-200 rounded-lg p-2.5"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "flex flex-wrap items-baseline justify-between gap-2 mb-1.5"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "text-xs font-medium text-slate-800"
-  }, u.name || u.userId, /*#__PURE__*/React.createElement("span", {
-    className: "text-slate-400 font-normal ml-2"
-  }, u.userId)), /*#__PURE__*/React.createElement("span", {
-    className: "text-[10px] uppercase tracking-[0.14em] text-amber-700"
-  }, "Awaiting registration")), /*#__PURE__*/React.createElement("div", {
-    className: "flex flex-wrap gap-2"
-  }, /*#__PURE__*/React.createElement("input", {
-    readOnly: true,
-    value: linkFor(u.userId) || "(no app address)",
-    onFocus: e => e.target.select(),
-    className: "flex-1 min-w-[180px] border border-slate-200 rounded-lg px-2.5 py-1.5 text-[11px] bg-slate-50 text-slate-600"
-  }), /*#__PURE__*/React.createElement("button", {
-    disabled: !baseUrl,
-    onClick: () => copy(linkFor(u.userId), "l" + u.userId),
-    className: "bg-slate-900 hover:bg-slate-700 disabled:opacity-40 text-white text-xs px-3 py-1.5 rounded-lg whitespace-nowrap"
-  }, copied === "l" + u.userId ? "Copied" : "Copy link"), /*#__PURE__*/React.createElement("a", {
-    href: mailtoFor(u),
-    className: "border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs px-3 py-1.5 rounded-lg whitespace-nowrap"
-  }, "Email"), /*#__PURE__*/React.createElement("button", {
-    onClick: () => setInviteFor(inviteFor === u.userId ? null : u.userId),
-    className: "text-blue-700 text-xs px-2 whitespace-nowrap"
-  }, inviteFor === u.userId ? "Hide" : "Message"))))), /*#__PURE__*/React.createElement("p", {
-    className: "text-[10px] text-slate-400 mt-3"
-  }, "The link pre-fills the user ID on the Register tab. It is a convenience, not a credential \u2014 anyone registering still needs a user ID you created, and only unregistered IDs can be claimed.")), !isSuperAdmin ? /*#__PURE__*/React.createElement("div", {
+    }, "New password"), /*#__PURE__*/React.createElement("input", {
+      autoFocus: true,
+      type: "password",
+      value: pwValue,
+      onChange: e => setPwValue(e.target.value),
+      onKeyDown: e => e.key === "Enter" && savePassword(),
+      className: "w-full border border-slate-300 rounded-lg px-3 py-2 text-sm",
+      placeholder: "At least 6 characters"
+    })), /*#__PURE__*/React.createElement("button", {
+      onClick: savePassword,
+      className: "bg-slate-900 hover:bg-slate-700 text-white text-sm px-4 py-2 rounded-lg shadow-sm"
+    }, "Save password")), pwErr && /*#__PURE__*/React.createElement("p", {
+      className: "text-xs text-rose-600 mt-2"
+    }, pwErr));
+  })(), !isSuperAdmin ? /*#__PURE__*/React.createElement("div", {
     className: "bg-slate-50 rounded-xl border border-slate-200 p-4"
   }, /*#__PURE__*/React.createElement("p", {
     className: "text-xs text-slate-500"
@@ -5029,7 +4871,7 @@ function UserPanel({
     className: "text-sm font-semibold mb-1"
   }, "Create User ID"), /*#__PURE__*/React.createElement("p", {
     className: "text-xs text-slate-500 mb-3"
-  }, "New accounts are always ", /*#__PURE__*/React.createElement("b", null, "Admin"), ". The user ID (email) is permanent \u2014 the display name can be changed at any time. The person then sets their own password and security question via ", /*#__PURE__*/React.createElement("b", null, "Register"), " on the sign-in screen."), /*#__PURE__*/React.createElement("div", {
+  }, "New accounts are always ", /*#__PURE__*/React.createElement("b", null, "Admin"), ". You set the user ID and its ", /*#__PURE__*/React.createElement("b", null, "password"), " here \u2014 the user signs in with them directly; there is no self-registration. The user ID (email) is permanent; the display name can be changed later. A security question is optional and only enables self-service password reset."), /*#__PURE__*/React.createElement("div", {
     className: "flex flex-wrap gap-2 items-end mb-3"
   }, /*#__PURE__*/React.createElement("label", {
     className: "block flex-1 min-w-[140px]"
@@ -5039,9 +4881,6 @@ function UserPanel({
     autoFocus: true,
     value: userId,
     onChange: e => setUserId(e.target.value),
-    onKeyDown: e => {
-      if (e.key === "Enter") submit();
-    },
     className: "w-full border border-slate-300 rounded-lg px-3 py-2 text-sm",
     placeholder: "e.g. operations@vrd.ae"
   })), /*#__PURE__*/React.createElement("label", {
@@ -5053,9 +4892,6 @@ function UserPanel({
   }, "(optional)")), /*#__PURE__*/React.createElement("input", {
     value: newName,
     onChange: e => setNewName(e.target.value),
-    onKeyDown: e => {
-      if (e.key === "Enter") submit();
-    },
     className: "w-full border border-slate-300 rounded-lg px-3 py-2 text-sm",
     placeholder: "e.g. Operations"
   })), /*#__PURE__*/React.createElement("label", {
@@ -5064,7 +4900,70 @@ function UserPanel({
     className: "block text-xs text-slate-500 mb-1"
   }, "Type"), /*#__PURE__*/React.createElement("div", {
     className: "border border-slate-200 rounded-lg px-3 py-2 text-sm bg-slate-50 text-slate-500"
-  }, "Admin"))), err && /*#__PURE__*/React.createElement("p", {
+  }, "Admin"))), /*#__PURE__*/React.createElement("div", {
+    className: "flex flex-wrap gap-2 items-end mb-3"
+  }, /*#__PURE__*/React.createElement("label", {
+    className: "block flex-1 min-w-[140px]"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "block text-xs text-slate-500 mb-1"
+  }, "Password"), /*#__PURE__*/React.createElement("input", {
+    type: "password",
+    value: newPw,
+    onChange: e => setNewPw(e.target.value),
+    className: "w-full border border-slate-300 rounded-lg px-3 py-2 text-sm",
+    placeholder: "At least 6 characters"
+  })), /*#__PURE__*/React.createElement("label", {
+    className: "block flex-1 min-w-[140px]"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "block text-xs text-slate-500 mb-1"
+  }, "Confirm Password"), /*#__PURE__*/React.createElement("input", {
+    type: "password",
+    value: newPw2,
+    onChange: e => setNewPw2(e.target.value),
+    onKeyDown: e => {
+      if (e.key === "Enter") submit();
+    },
+    className: "w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
+  }))), /*#__PURE__*/React.createElement("div", {
+    className: "flex flex-wrap gap-2 items-end mb-3"
+  }, /*#__PURE__*/React.createElement("label", {
+    className: "block flex-1 min-w-[180px]"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "block text-xs text-slate-500 mb-1"
+  }, "Security Question ", /*#__PURE__*/React.createElement("span", {
+    className: "text-slate-400"
+  }, "(optional)")), /*#__PURE__*/React.createElement("select", {
+    value: qChoice,
+    onChange: e => {
+      setQChoice(e.target.value);
+      setQuestion(e.target.value === "Custom…" ? "" : e.target.value);
+    },
+    className: "w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
+  }, QUESTIONS.map(q => /*#__PURE__*/React.createElement("option", {
+    key: q
+  }, q)))), qChoice === "Custom…" && /*#__PURE__*/React.createElement("label", {
+    className: "block flex-1 min-w-[140px]"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "block text-xs text-slate-500 mb-1"
+  }, "Custom question"), /*#__PURE__*/React.createElement("input", {
+    value: question,
+    onChange: e => setQuestion(e.target.value),
+    placeholder: "Your security question",
+    className: "w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
+  })), /*#__PURE__*/React.createElement("label", {
+    className: "block flex-1 min-w-[140px]"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "block text-xs text-slate-500 mb-1"
+  }, "Answer ", /*#__PURE__*/React.createElement("span", {
+    className: "text-slate-400"
+  }, "(optional)")), /*#__PURE__*/React.createElement("input", {
+    value: answer,
+    onChange: e => setAnswer(e.target.value),
+    onKeyDown: e => {
+      if (e.key === "Enter") submit();
+    },
+    className: "w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
+  }))), err && /*#__PURE__*/React.createElement("p", {
     className: "text-xs text-rose-600 mb-2"
   }, err), /*#__PURE__*/React.createElement("div", {
     className: "flex gap-2"
@@ -5075,14 +4974,14 @@ function UserPanel({
   }, "Create User ID"), /*#__PURE__*/React.createElement("button", {
     onClick: () => {
       setShowForm(false);
-      setErr("");
+      resetForm();
     },
     className: "px-4 py-2 rounded-lg border border-slate-300 text-slate-600 text-sm"
   }, "Cancel"))), !canAdd && !showForm && /*#__PURE__*/React.createElement("p", {
     className: "text-xs text-slate-400 mt-2"
   }, "Maximum ", maxUsers, " users reached."), canAdd && !showForm && /*#__PURE__*/React.createElement("p", {
     className: "text-xs text-slate-400 mt-2"
-  }, "Names are editable; user IDs are not. The Super Admin account cannot be removed or reset.")));
+  }, "Names are editable; user IDs are not. The Super Admin account cannot be removed or have its password set by others.")));
 }
 function Modal({
   title,
