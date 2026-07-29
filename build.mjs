@@ -13,6 +13,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
+import { createHash } from "node:crypto";
 
 const require = createRequire(import.meta.url);
 const babel = require("@babel/core");
@@ -28,4 +29,14 @@ const result = babel.transformSync(code, {
   compact: false,
 });
 writeFileSync(out, result.code);
-console.log(`Transpiled ${src} -> ${out} (${result.code.length} bytes)`);
+
+// Cache-busting: stamp index.html's app.js reference with a content hash so a
+// returning browser always fetches the new build after a deploy instead of a
+// stale cached copy.
+const ver = createHash("sha256").update(result.code).digest("hex").slice(0, 10);
+const idxPath = join(here, "index.html");
+let idx = readFileSync(idxPath, "utf8");
+const before = idx;
+idx = idx.replace(/src="app\.js(?:\?v=[0-9a-f]+)?"/, `src="app.js?v=${ver}"`);
+if (idx !== before) writeFileSync(idxPath, idx);
+console.log(`Transpiled ${src} -> ${out} (${result.code.length} bytes); app.js?v=${ver}`);
