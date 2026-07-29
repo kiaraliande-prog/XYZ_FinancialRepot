@@ -907,6 +907,23 @@ function App() {
     addStyledSheet("Disbursements", fDisb.map((d) => ({ Date: d.date, Party: d.party, "Source Agreement": d.agreementTitle, Description: d.description || "", "Payment Status": d.paymentStatus, Currency: d.currency, "Allocated Amount": Number(d.amount), Paid: d.paid, Outstanding: d.outstanding, "Paid (USD)": d.paidUSD, Comment: d.comment || "" })));
     addStyledSheet("Disb Payments", fDisb.flatMap((d) => (d.payments || []).map((p) => ({ Date: p.date, Party: d.party, "Source Agreement": d.agreementTitle, Currency: d.currency, Amount: Number(p.amount), "Rate to USD": Number(p.rate), "USD Equivalent": p.amount * p.rate, Comment: p.notes || "" }))));
     addStyledSheet("Transfers", fTr.map((t) => ({ Date: t.date, "From Party": t.fromParty, "To Account": t.accountName, "Account Currency": t.accountCurrency, "Partial/Full": t.payType, "Transfer Currency": t.currency, Amount: Number(t.amount), "Rate to USD": Number(t.rate), "USD Equivalent": t.usd, Comment: t.notes || "" })));
+    // Excel worksheet names must be unique and <= 31 chars, and cannot contain
+    // \ / ? * [ ] :. Stripping those characters can make two different parties
+    // collapse to the same name (e.g. "CB" and "CB***" both become "ST · CB"),
+    // which makes book_append_sheet throw and aborts the whole export. Force a
+    // unique, length-safe name by appending " (2)", " (3)", … on collision.
+    const usedSheetNames = new Set(["summary", "agreements", "invoices", "receipts", "disbursements", "disb payments", "transfers"]);
+    const uniqueSheetName = (raw) => {
+      const clean = raw.replace(/[\\/?*\[\]:]/g, "");
+      let name = clean.slice(0, 31);
+      let n = 2;
+      while (usedSheetNames.has(name.toLowerCase())) {
+        const suffix = " (" + n++ + ")";
+        name = clean.slice(0, 31 - suffix.length) + suffix;
+      }
+      usedSheetNames.add(name.toLowerCase());
+      return name;
+    };
     partyList.forEach((p) => {
       const st = buildStatement(p);
       const rows = [
@@ -921,7 +938,7 @@ function App() {
       if (ws["A1"]) ws["A1"].s = titleStyle;
       const range = XLSX.utils.decode_range(ws["!ref"]);
       for (let C = 0; C <= range.e.c; C++) { const addr = XLSX.utils.encode_cell({ r: 3, c: C }); if (ws[addr]) ws[addr].s = hdr; }
-      const safe = ("ST · " + p).replace(/[\\/?*\[\]:]/g, "").slice(0, 31);
+      const safe = uniqueSheetName("ST · " + p);
       XLSX.utils.book_append_sheet(wb, ws, safe);
     });
     XLSX.writeFile(wb, `Funds_Flow_Report_USD_${new Date().toISOString().slice(0, 10)}.xlsx`);

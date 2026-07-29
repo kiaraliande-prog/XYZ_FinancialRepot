@@ -1866,6 +1866,23 @@ function App() {
       "USD Equivalent": t.usd,
       Comment: t.notes || ""
     })));
+    // Excel worksheet names must be unique and <= 31 chars, and cannot contain
+    // \ / ? * [ ] :. Stripping those characters can make two different parties
+    // collapse to the same name (e.g. "CB" and "CB***" both become "ST · CB"),
+    // which makes book_append_sheet throw and aborts the whole export. Force a
+    // unique, length-safe name by appending " (2)", " (3)", … on collision.
+    const usedSheetNames = new Set(["summary", "agreements", "invoices", "receipts", "disbursements", "disb payments", "transfers"]);
+    const uniqueSheetName = raw => {
+      const clean = raw.replace(/[\\/?*\[\]:]/g, "");
+      let name = clean.slice(0, 31);
+      let n = 2;
+      while (usedSheetNames.has(name.toLowerCase())) {
+        const suffix = " (" + n++ + ")";
+        name = clean.slice(0, 31 - suffix.length) + suffix;
+      }
+      usedSheetNames.add(name.toLowerCase());
+      return name;
+    };
     partyList.forEach(p => {
       const st = buildStatement(p);
       const rows = [[`STATEMENT — ${p}`], [`Received (USD): ${fmt(st.inUSD)}`, `Paid Onward (USD): ${fmt(st.outUSD)}`, `Holding (USD): ${fmt(st.holding)}`], [], ["Date", "Description", "Currency", "Amount", "In (USD)", "Out (USD)", "Balance (USD)", "Comment"], ...st.rows.map(r => [r.date, r.desc, r.currency, r.amount, r.kind === "in" ? r.usd : "", r.kind === "out" ? r.usd : "", r.balance, r.comment])];
@@ -1896,7 +1913,7 @@ function App() {
         });
         if (ws[addr]) ws[addr].s = hdr;
       }
-      const safe = ("ST · " + p).replace(/[\\/?*\[\]:]/g, "").slice(0, 31);
+      const safe = uniqueSheetName("ST · " + p);
       XLSX.utils.book_append_sheet(wb, ws, safe);
     });
     XLSX.writeFile(wb, `Funds_Flow_Report_USD_${new Date().toISOString().slice(0, 10)}.xlsx`);
