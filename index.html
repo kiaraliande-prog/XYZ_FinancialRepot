@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>XYZ Financial Report — Agreement Revenue &amp; Disbursement</title>
+<meta name="description" content="XYZ Financial Report v3.8 — agreement revenue, receipts, invoices, disbursements, onward transfers and party statements." />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='16' fill='%230f172a'/%3E%3Ctext x='50' y='68' font-size='60' font-family='Georgia,serif' fill='%23e2e8f0' text-anchor='middle'%3EX%3C/text%3E%3C/svg%3E" />
+
+<!-- Everything below is vendored into /vendor — no external network requests,
+     so the page works on any static host (GitHub Pages, etc.) and offline. -->
+
+<!-- Tailwind (Play CDN engine, vendored) — JIT-generates the utility classes at runtime -->
+<script src="vendor/tailwind.js"></script>
+
+<!-- React + ReactDOM (UMD globals: React, ReactDOM) -->
+<script src="vendor/react.production.min.js"></script>
+<script src="vendor/react-dom.production.min.js"></script>
+
+<!-- SheetJS (global: XLSX) for Excel import/export -->
+<script src="vendor/xlsx.full.min.js"></script>
+
+<style>
+  html, body { margin: 0; background: #f8fafc; }
+  /* Loading veil shown until React has mounted */
+  #ft-boot {
+    position: fixed; inset: 0; z-index: 9999;
+    display: flex; align-items: center; justify-content: center;
+    background: #f1f5f9; color: #64748b;
+    font-family: Arial, Helvetica, "Segoe UI", Roboto, sans-serif; font-size: 14px;
+    transition: opacity .35s ease;
+  }
+  #ft-boot.hide { opacity: 0; pointer-events: none; }
+  #ft-boot .box { text-align: center; }
+  #ft-boot .spin {
+    width: 34px; height: 34px; margin: 0 auto 14px;
+    border: 3px solid #cbd5e1; border-top-color: #0f172a; border-radius: 50%;
+    animation: ftspin .8s linear infinite;
+  }
+  @keyframes ftspin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div id="ft-boot"><div class="box"><div class="spin"></div>Loading XYZ Financial Report…</div></div>
+<div id="root"></div>
+
+<!--
+  window.storage shim
+  ------------------------------------------------------------------
+  The original app persisted every record through the claude.ai artifact
+  runtime's `window.storage` (a real shared, server-side store). A published
+  static website has no backend, so this shim maps the same async API onto the
+  browser's own localStorage. Behaviour is identical for a single browser; the
+  `shared` flag is kept as a key namespace so the app's fallback reads
+  (shared -> personal) keep working. Data lives in THIS browser only — use the
+  in-app "Generate Report" / Excel export to keep a portable copy.
+-->
+<script>
+(function () {
+  var PREFIX = "xyzfr:";
+  function keyFor(k, shared) { return PREFIX + (shared ? "shared:" : "local:") + k; }
+  function read(k, shared) {
+    try {
+      var v = localStorage.getItem(keyFor(k, shared));
+      return v === null ? null : { value: v };
+    } catch (e) { return null; }
+  }
+  window.storage = {
+    // Default to the shared namespace to match the app's SHARED = true default.
+    get: function (k, shared) {
+      if (shared === undefined) shared = true;
+      return Promise.resolve(read(k, shared));
+    },
+    set: function (k, v, shared) {
+      if (shared === undefined) shared = true;
+      try { localStorage.setItem(keyFor(k, shared), v); } catch (e) {}
+      return Promise.resolve();
+    },
+    delete: function (k) {
+      // Remove from both namespaces so a logout/clear is thorough.
+      try { localStorage.removeItem(keyFor(k, true)); } catch (e) {}
+      try { localStorage.removeItem(keyFor(k, false)); } catch (e) {}
+      return Promise.resolve();
+    }
+  };
+})();
+</script>
+
+<!-- The application (pre-transpiled from src/app.jsx by build.mjs). -->
+<script src="app.js"></script>
+</body>
+</html>

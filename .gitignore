@@ -1,0 +1,4 @@
+# Local build tooling — not part of the published site
+/node_modules
+npm-debug.log*
+.DS_Store
