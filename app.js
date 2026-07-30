@@ -3205,6 +3205,7 @@ function App() {
     users: users,
     agreements: data.agreements,
     onAdd: () => setNoteModal({}),
+    onEdit: n => setNoteModal(n),
     onDelete: (id, label) => ask(`Delete this note${label ? ` (${label})` : ""}?`, () => removeNote(id))
   }))), modal?.type === "agreement" && /*#__PURE__*/React.createElement(AgreementForm, {
     initial: modal.payload,
@@ -5203,6 +5204,7 @@ function NotesPanel({
   users,
   agreements,
   onAdd,
+  onEdit,
   onDelete
 }) {
   const [q, setQ] = useState("");
@@ -5293,8 +5295,11 @@ function NotesPanel({
   }, agTitle(n.agreementId)) : /*#__PURE__*/React.createElement("span", {
     className: "text-slate-300"
   }, "\u2014")), /*#__PURE__*/React.createElement("td", {
-    className: "px-2 py-3 text-right"
+    className: "px-2 py-3 text-right whitespace-nowrap"
   }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => onEdit(n),
+    className: "text-blue-700 hover:text-blue-800 text-xs mr-3"
+  }, "Edit"), /*#__PURE__*/React.createElement("button", {
     onClick: () => onDelete(n.id, (n.text || "").slice(0, 30)),
     className: "text-rose-600 hover:text-rose-700 text-xs"
   }, "Delete")))))))));

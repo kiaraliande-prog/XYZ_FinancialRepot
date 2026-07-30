@@ -1506,7 +1506,7 @@ function App() {
         )}
 
         {tab === "notes" && (
-          <NotesPanel notes={data.notes || []} users={users} agreements={data.agreements} onAdd={() => setNoteModal({})} onDelete={(id, label) => ask(`Delete this note${label ? ` (${label})` : ""}?`, () => removeNote(id))} />
+          <NotesPanel notes={data.notes || []} users={users} agreements={data.agreements} onAdd={() => setNoteModal({})} onEdit={(n) => setNoteModal(n)} onDelete={(id, label) => ask(`Delete this note${label ? ` (${label})` : ""}?`, () => removeNote(id))} />
         )}
       </div>
       </ErrorBoundary>
@@ -2364,7 +2364,7 @@ function NoteModal({ preset, users, agreements, currentUser, onClose, onSave }) 
   );
 }
 
-function NotesPanel({ notes, users, agreements, onAdd, onDelete }) {
+function NotesPanel({ notes, users, agreements, onAdd, onEdit, onDelete }) {
   const [q, setQ] = useState("");
   const userName = (id) => { if (!id) return ""; const u = users.find((x) => x.userId === id); return u ? (u.name ? `${u.name} (${u.userId})` : u.userId) : id; };
   const agTitle = (id) => { if (!id) return ""; const a = agreements.find((x) => x.id === id); return a ? (a.ref ? a.ref + " · " : "") + a.title : ""; };
@@ -2404,7 +2404,7 @@ function NotesPanel({ notes, users, agreements, onAdd, onDelete }) {
                   <td className="px-4 py-3 whitespace-pre-wrap text-slate-800">{n.text}</td>
                   <td className="px-4 py-3">{n.assignedTo ? <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium ring-1 ring-inset bg-blue-50 text-blue-700 ring-blue-600/20">{userName(n.assignedTo)}</span> : <span className="text-slate-300">—</span>}</td>
                   <td className="px-4 py-3">{n.agreementId ? <span className="text-slate-700">{agTitle(n.agreementId)}</span> : <span className="text-slate-300">—</span>}</td>
-                  <td className="px-2 py-3 text-right"><button onClick={() => onDelete(n.id, (n.text || "").slice(0, 30))} className="text-rose-600 hover:text-rose-700 text-xs">Delete</button></td>
+                  <td className="px-2 py-3 text-right whitespace-nowrap"><button onClick={() => onEdit(n)} className="text-blue-700 hover:text-blue-800 text-xs mr-3">Edit</button><button onClick={() => onDelete(n.id, (n.text || "").slice(0, 30))} className="text-rose-600 hover:text-rose-700 text-xs">Delete</button></td>
                 </tr>
               ))}
             </tbody>
