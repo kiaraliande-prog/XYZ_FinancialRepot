@@ -706,7 +706,8 @@ function buildSeed() {
     agreements,
     disbursements,
     transfers: [],
-    accounts
+    accounts,
+    notes: []
   };
 }
 function App() {
@@ -1000,7 +1001,8 @@ function App() {
     agreements: [],
     disbursements: [],
     transfers: [],
-    accounts: []
+    accounts: [],
+    notes: []
   };
   const [data, setData] = useState(empty);
   const [loaded, setLoaded] = useState(false);
@@ -1031,6 +1033,7 @@ function App() {
   const [newComment, setNewComment] = useState("");
   const [rcptCommentEdit, setRcptCommentEdit] = useState(null);
   const [reportModal, setReportModal] = useState(false);
+  const [noteModal, setNoteModal] = useState(null); // {agreementId?} while the note pop-up is open
   const [previewHtml, setPreviewHtml] = useState(null);
   const [appUrl, setAppUrl] = useState("");
   const [release, setRelease] = useState(null);
@@ -1644,6 +1647,20 @@ function App() {
     next.disbursements = disb;
     save(next);
   };
+  // General notes: free-text notes, optionally assigned to a user and/or tied to
+  // an agreement, stamped with the date they were entered. Stored in data.notes.
+  const saveNote = note => {
+    const list = data.notes || [];
+    const exists = list.some(n => n.id === note.id);
+    save({
+      ...data,
+      notes: exists ? list.map(n => n.id === note.id ? note : n) : [...list, note]
+    });
+  };
+  const removeNote = id => save({
+    ...data,
+    notes: (data.notes || []).filter(n => n.id !== id)
+  });
   const loadRegister = () => {
     const doLoad = () => {
       save(buildSeed());
@@ -2120,7 +2137,7 @@ function App() {
     className: "bg-white border-b border-slate-200"
   }, /*#__PURE__*/React.createElement("div", {
     className: "no-print w-full px-3 sm:px-6 lg:px-8 xl:px-10 flex gap-4 sm:gap-8 md:justify-between md:gap-4 overflow-x-auto no-scrollbar"
-  }, [["dashboard", "Dashboard"], ["agreements", "Agreements & Receipts"], ["disbursements", "Disbursements"], ["transfers", "Onward Transfers"], ["parties", "Parties"], ["settings", "Settings"]].filter(([k]) => k !== "settings" || !LOGIN_ENABLED || [SUPER, "admin"].includes(users.find(u => u.userId === currentUser)?.role)).map(([k, l]) => /*#__PURE__*/React.createElement("button", {
+  }, [["dashboard", "Dashboard"], ["agreements", "Agreements & Receipts"], ["disbursements", "Disbursements"], ["transfers", "Onward Transfers"], ["parties", "Parties"], ["settings", "Settings"], ["notes", "Notes"]].filter(([k]) => k !== "settings" || !LOGIN_ENABLED || [SUPER, "admin"].includes(users.find(u => u.userId === currentUser)?.role)).map(([k, l]) => /*#__PURE__*/React.createElement("button", {
     key: k,
     onClick: () => {
       setTab(k);
@@ -2129,7 +2146,7 @@ function App() {
     className: `relative shrink-0 py-3.5 sm:py-4 text-[10px] sm:text-[11px] lg:text-xs font-medium tracking-[0.12em] sm:tracking-[0.14em] lg:tracking-[0.16em] uppercase whitespace-nowrap transition-colors ${tab === k ? "text-slate-900" : "text-slate-500 hover:text-slate-800"}`
   }, l, tab === k && /*#__PURE__*/React.createElement("span", {
     className: "absolute left-0 right-0 -bottom-px h-0.5 bg-slate-900 rounded-full"
-  }))))), tab !== "settings" && tab !== "parties" && /*#__PURE__*/React.createElement("div", {
+  }))))), tab !== "settings" && tab !== "parties" && tab !== "notes" && /*#__PURE__*/React.createElement("div", {
     className: "bg-white border-b border-slate-200"
   }, /*#__PURE__*/React.createElement("div", {
     className: "no-print w-full px-3 sm:px-6 lg:px-8 xl:px-10 py-2.5 sm:py-3 flex flex-nowrap sm:flex-wrap gap-2 items-center overflow-x-auto sm:overflow-visible no-scrollbar"
@@ -3183,7 +3200,13 @@ function App() {
     data: data,
     save: save,
     ask: ask
-  }))))), modal?.type === "agreement" && /*#__PURE__*/React.createElement(AgreementForm, {
+  }))), tab === "notes" && /*#__PURE__*/React.createElement(NotesPanel, {
+    notes: data.notes || [],
+    users: users,
+    agreements: data.agreements,
+    onAdd: () => setNoteModal({}),
+    onDelete: (id, label) => ask(`Delete this note${label ? ` (${label})` : ""}?`, () => removeNote(id))
+  }))), modal?.type === "agreement" && /*#__PURE__*/React.createElement(AgreementForm, {
     initial: modal.payload,
     nextRef: nextRef,
     currencies: data.currencies,
@@ -3420,6 +3443,17 @@ function App() {
       if (which === "excel" || which === "both") exportExcel(list);
       setReportModal(false);
     }
+  }), noteModal && /*#__PURE__*/React.createElement(NoteModal, {
+    preset: noteModal,
+    users: users,
+    agreements: data.agreements,
+    currentUser: currentUser,
+    onClose: () => setNoteModal(null),
+    onSave: n => {
+      saveNote(n);
+      setNoteModal(null);
+      setNotice("Note saved — see the Notes tab.");
+    }
   }), previewHtml && /*#__PURE__*/React.createElement("div", {
     className: "fixed inset-0 bg-black bg-opacity-50 z-50 flex flex-col",
     onClick: () => setPreviewHtml(null)
@@ -3469,11 +3503,13 @@ function App() {
       setConfirmState(null);
     },
     className: "px-4 py-2 text-sm rounded-lg bg-rose-600 hover:bg-rose-500 text-white shadow-sm"
-  }, "Confirm"))), /*#__PURE__*/React.createElement("button", {
+  }, "Confirm"))), /*#__PURE__*/React.createElement("div", {
+    className: `no-print fixed right-6 z-40 flex flex-col items-center gap-2.5 transition-all duration-200 ${notice ? "bottom-24" : "bottom-6"}`
+  }, showTop && /*#__PURE__*/React.createElement("button", {
     onClick: scrollToTop,
     title: "Back to top",
     "aria-label": "Back to top",
-    className: `no-print fixed right-6 z-40 w-11 h-11 rounded-full bg-slate-900 hover:bg-slate-700 text-white shadow-lg flex items-center justify-center transition-all duration-200 ${notice ? "bottom-24" : "bottom-6"} ${showTop ? "opacity-90 hover:opacity-100" : "opacity-0 pointer-events-none"}`
+    className: "w-11 h-11 rounded-full bg-slate-900 hover:bg-slate-700 text-white shadow-lg flex items-center justify-center transition-all duration-200 opacity-90 hover:opacity-100"
   }, /*#__PURE__*/React.createElement("svg", {
     width: "16",
     height: "16",
@@ -3485,7 +3521,23 @@ function App() {
     strokeLinejoin: "round"
   }, /*#__PURE__*/React.createElement("path", {
     d: "M18 15l-6-6-6 6"
-  }))));
+  }))), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setNoteModal({}),
+    title: "Add a note",
+    "aria-label": "Add a note",
+    className: "w-12 h-12 rounded-full bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg flex items-center justify-center transition-colors"
+  }, /*#__PURE__*/React.createElement("svg", {
+    width: "20",
+    height: "20",
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: "2.5",
+    strokeLinecap: "round",
+    strokeLinejoin: "round"
+  }, /*#__PURE__*/React.createElement("path", {
+    d: "M12 5v14M5 12h14"
+  })))));
 }
 function DisbTab({
   fDisb,
@@ -5067,6 +5119,185 @@ function ReportModal({
     onClick: () => onGenerate(which, pick),
     className: "flex-1 bg-emerald-600 hover:bg-emerald-500 text-white py-2 rounded-lg text-sm font-medium shadow-sm"
   }, "Generate")));
+}
+function NoteModal({
+  preset,
+  users,
+  agreements,
+  currentUser,
+  onClose,
+  onSave
+}) {
+  const editing = !!(preset && preset.id);
+  const [text, setText] = useState(editing ? preset.text || "" : "");
+  const [assignedTo, setAssignedTo] = useState(preset && preset.assignedTo || "");
+  const [agreementId, setAgreementId] = useState(preset && preset.agreementId || "");
+  const [err, setErr] = useState("");
+  const submit = () => {
+    if (!text.trim()) {
+      setErr("Enter a note.");
+      return;
+    }
+    onSave({
+      id: editing ? preset.id : uid(),
+      text: text.trim(),
+      assignedTo,
+      agreementId,
+      createdBy: editing ? preset.createdBy || currentUser || "" : currentUser || "",
+      ts: editing && preset.ts ? preset.ts : Date.now()
+    });
+  };
+  return /*#__PURE__*/React.createElement(Modal, {
+    title: editing ? "Edit note" : "Add a note",
+    onClose: onClose
+  }, /*#__PURE__*/React.createElement(Field, {
+    label: "Note"
+  }, /*#__PURE__*/React.createElement("textarea", {
+    autoFocus: true,
+    value: text,
+    onChange: e => setText(e.target.value),
+    onKeyDown: e => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") submit();
+    },
+    rows: 4,
+    placeholder: "Type your note\u2026",
+    className: inp
+  })), /*#__PURE__*/React.createElement("div", {
+    className: "grid grid-cols-1 sm:grid-cols-2 gap-3"
+  }, /*#__PURE__*/React.createElement(Field, {
+    label: "Assign to (optional)"
+  }, /*#__PURE__*/React.createElement("select", {
+    value: assignedTo,
+    onChange: e => setAssignedTo(e.target.value),
+    className: inp
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "Unassigned"), users.map(u => /*#__PURE__*/React.createElement("option", {
+    key: u.userId,
+    value: u.userId
+  }, u.name ? `${u.name} (${u.userId})` : u.userId)))), /*#__PURE__*/React.createElement(Field, {
+    label: "Agreement (optional)"
+  }, /*#__PURE__*/React.createElement("select", {
+    value: agreementId,
+    onChange: e => setAgreementId(e.target.value),
+    className: inp
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "Not linked to an agreement"), agreements.map(a => /*#__PURE__*/React.createElement("option", {
+    key: a.id,
+    value: a.id
+  }, (a.ref ? a.ref + " · " : "") + a.title))))), err && /*#__PURE__*/React.createElement("p", {
+    className: "text-xs text-rose-600 mb-2"
+  }, err), /*#__PURE__*/React.createElement("div", {
+    className: "flex gap-2 justify-end mt-1"
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: onClose,
+    className: "px-4 py-2 text-sm rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50"
+  }, "Cancel"), /*#__PURE__*/React.createElement("button", {
+    onClick: submit,
+    className: "px-4 py-2 text-sm rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white shadow-sm"
+  }, editing ? "Save note" : "Add note")));
+}
+function NotesPanel({
+  notes,
+  users,
+  agreements,
+  onAdd,
+  onDelete
+}) {
+  const [q, setQ] = useState("");
+  const userName = id => {
+    if (!id) return "";
+    const u = users.find(x => x.userId === id);
+    return u ? u.name ? `${u.name} (${u.userId})` : u.userId : id;
+  };
+  const agTitle = id => {
+    if (!id) return "";
+    const a = agreements.find(x => x.id === id);
+    return a ? (a.ref ? a.ref + " · " : "") + a.title : "";
+  };
+  const fmtDate = ts => {
+    try {
+      return new Date(ts).toLocaleString("en-GB", {
+        day: "2-digit",
+        month: "short",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit"
+      });
+    } catch (e) {
+      return "";
+    }
+  };
+  const sorted = [...notes].sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  const ql = q.trim().toLowerCase();
+  const shown = ql ? sorted.filter(n => (n.text || "").toLowerCase().includes(ql) || userName(n.assignedTo).toLowerCase().includes(ql) || agTitle(n.agreementId).toLowerCase().includes(ql)) : sorted;
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    className: "flex flex-wrap justify-between items-baseline gap-3 mb-6"
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h2", {
+    className: "font-serif text-2xl text-slate-900 tracking-tight"
+  }, "Notes"), /*#__PURE__*/React.createElement("p", {
+    className: "text-[10px] uppercase tracking-[0.18em] text-slate-400 mt-1"
+  }, notes.length, " note", notes.length === 1 ? "" : "s")), /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center gap-2"
+  }, /*#__PURE__*/React.createElement("input", {
+    value: q,
+    onChange: e => setQ(e.target.value),
+    placeholder: "Search notes\u2026",
+    className: "border border-slate-200 rounded-lg px-3 py-2 text-sm w-44 sm:w-56 focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-100"
+  }), /*#__PURE__*/React.createElement("button", {
+    onClick: onAdd,
+    className: "bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] uppercase tracking-[0.14em] px-4 py-2 rounded-lg shadow-sm transition-colors whitespace-nowrap"
+  }, "+ New Note"))), /*#__PURE__*/React.createElement("div", {
+    className: "bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "overflow-x-auto"
+  }, /*#__PURE__*/React.createElement("table", {
+    className: "w-full text-sm min-w-[760px]"
+  }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", {
+    className: "border-b border-slate-200 bg-slate-50 text-[10px] uppercase tracking-[0.14em] text-slate-500"
+  }, /*#__PURE__*/React.createElement("th", {
+    className: "text-left px-4 py-2 font-semibold w-44"
+  }, "Date Entered"), /*#__PURE__*/React.createElement("th", {
+    className: "text-left px-4 py-2 font-semibold"
+  }, "Note"), /*#__PURE__*/React.createElement("th", {
+    className: "text-left px-4 py-2 font-semibold w-44"
+  }, "Assigned To"), /*#__PURE__*/React.createElement("th", {
+    className: "text-left px-4 py-2 font-semibold w-48"
+  }, "Agreement"), /*#__PURE__*/React.createElement("th", {
+    className: "px-2 py-2 w-10"
+  }))), /*#__PURE__*/React.createElement("tbody", {
+    className: "text-slate-700"
+  }, shown.length === 0 && /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("td", {
+    colSpan: 5,
+    className: "px-4 py-10 text-center text-slate-400 italic"
+  }, notes.length ? "No notes match your search." : "No notes yet. Use the + button at the bottom-right of any page, or “New Note”.")), shown.map(n => /*#__PURE__*/React.createElement("tr", {
+    key: n.id,
+    className: "border-t border-slate-100 align-top hover:bg-slate-50/70"
+  }, /*#__PURE__*/React.createElement("td", {
+    className: "px-4 py-3 text-slate-500 tabular-nums whitespace-nowrap"
+  }, fmtDate(n.ts), n.createdBy && /*#__PURE__*/React.createElement("span", {
+    className: "block text-[10px] text-slate-400"
+  }, "by ", n.createdBy)), /*#__PURE__*/React.createElement("td", {
+    className: "px-4 py-3 whitespace-pre-wrap text-slate-800"
+  }, n.text), /*#__PURE__*/React.createElement("td", {
+    className: "px-4 py-3"
+  }, n.assignedTo ? /*#__PURE__*/React.createElement("span", {
+    className: "inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium ring-1 ring-inset bg-blue-50 text-blue-700 ring-blue-600/20"
+  }, userName(n.assignedTo)) : /*#__PURE__*/React.createElement("span", {
+    className: "text-slate-300"
+  }, "\u2014")), /*#__PURE__*/React.createElement("td", {
+    className: "px-4 py-3"
+  }, n.agreementId ? /*#__PURE__*/React.createElement("span", {
+    className: "text-slate-700"
+  }, agTitle(n.agreementId)) : /*#__PURE__*/React.createElement("span", {
+    className: "text-slate-300"
+  }, "\u2014")), /*#__PURE__*/React.createElement("td", {
+    className: "px-2 py-3 text-right"
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => onDelete(n.id, (n.text || "").slice(0, 30)),
+    className: "text-rose-600 hover:text-rose-700 text-xs"
+  }, "Delete")))))))));
 }
 const rateHint = cur => cur === "AED" ? "(fixed 0.2740 = 1/3.65 — editable)" : cur === "USD" ? "(1.00)" : "(rate to USD on the day — editable)";
 const defaultRate = (cur, currencies) => cur === "USD" ? 1 : currencies.find(c => c.code === cur)?.fixed ? currencies.find(c => c.code === cur).rate : "";
