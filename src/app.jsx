@@ -2710,16 +2710,17 @@ function CellDisbForm({ agreement, receipt, party, initial, currencies, allDisb,
     <Modal title={initial ? `Edit Disbursement — ${party}` : `Disburse to ${party}`} onClose={onClose}>
       <p className="-mt-1 mb-4 text-[11px] text-slate-500">{agreement.ref ? agreement.ref + " · " : ""}{agreement.title}{receipt ? <> · against the payment of <b>{csym(agreement.currency)} {fmt(receipt.amount)}</b> received {receipt.date}</> : null}</p>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4">
-        <Field label={`Amount to Disburse (${cur})`}><input type="number" className={inp} value={f.amount} onChange={set("amount")} /></Field>
-        <Field label="Date"><input type="date" className={inp} value={f.date} onChange={set("date")} /></Field>
+        <Field label={`Allocated — expected (${cur})`}><input type="number" className={inp} value={f.amount} onChange={set("amount")} placeholder="0.00" /></Field>
+        {!manyPays && <Field label={`Disbursed — actually paid (${cur})`}><input type="number" className={`${inp} border-rose-300 focus:border-rose-400 focus:ring-rose-100`} value={paidOut} onChange={(e) => setPaidOut(e.target.value)} placeholder={f.paymentStatus === "Paid" ? fmt(amt) : "0.00"} /></Field>}
       </div>
+      <p className="-mt-1 mb-4 text-[11px] text-slate-400"><b className="text-slate-500">Allocated</b> is what {party} is owed on this payment; <b className="text-slate-500">Disbursed</b> is what has actually been paid out to them. The figure in the table is the <b>Disbursed</b> amount — edit it here.</p>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4">
         <Field label="Status">
           <select className={inp} value={f.paymentStatus} onChange={set("paymentStatus")}>
             {["Ongoing", "Hold", "Pending", "Overdue", "Paid"].map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
         </Field>
-        {!manyPays && <Field label={`Paid Out So Far (${cur})`}><input type="number" className={inp} value={paidOut} onChange={(e) => setPaidOut(e.target.value)} placeholder={f.paymentStatus === "Paid" ? fmt(amt) : "0.00"} /></Field>}
+        <Field label="Date"><input type="date" className={inp} value={f.date} onChange={set("date")} /></Field>
       </div>
       {manyPays && <p className="-mt-2 mb-4 text-[11px] text-slate-500">{existingPays.length} payments totalling {csym(cur)} {fmt(existingPays.reduce((s, q) => s + Number(q.amount || 0), 0))} are recorded against this disbursement. Edit them individually on the Disbursements tab.</p>}
       {f.paymentStatus === "Paid" && !manyPays && !String(paidOut).trim() && <p className="-mt-2 mb-4 text-[11px] text-slate-400">Marked Paid with no figure entered, so the full {csym(cur)} {fmt(amt)} counts as disbursed.</p>}
@@ -2737,7 +2738,7 @@ function CellDisbForm({ agreement, receipt, party, initial, currencies, allDisb,
       <Field label="Comment"><input className={inp} value={f.comment} onChange={set("comment")} placeholder="Reference, remarks…" /></Field>
       <div className="flex gap-2">
         {initial && onDelete && <button onClick={onDelete} className="px-4 py-2 rounded-lg text-sm font-medium border border-rose-200 text-rose-600 hover:bg-rose-50">Delete</button>}
-        <button disabled={!amt} onClick={save} className="flex-1 bg-rose-600 hover:bg-rose-500 disabled:opacity-40 text-white py-2 rounded-lg text-sm font-medium shadow-sm">{initial ? "Save Disbursement" : "Record Disbursement"}</button>
+        <button disabled={!amt && !paid} onClick={save} className="flex-1 bg-rose-600 hover:bg-rose-500 disabled:opacity-40 text-white py-2 rounded-lg text-sm font-medium shadow-sm">{initial ? "Save Disbursement" : "Record Disbursement"}</button>
       </div>
     </Modal>
   );

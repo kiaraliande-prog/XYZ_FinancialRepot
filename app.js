@@ -6091,20 +6091,28 @@ function CellDisbForm({
   }, agreement.ref ? agreement.ref + " · " : "", agreement.title, receipt ? /*#__PURE__*/React.createElement(React.Fragment, null, " \xB7 against the payment of ", /*#__PURE__*/React.createElement("b", null, csym(agreement.currency), " ", fmt(receipt.amount)), " received ", receipt.date) : null), /*#__PURE__*/React.createElement("div", {
     className: "grid grid-cols-1 sm:grid-cols-2 gap-x-4"
   }, /*#__PURE__*/React.createElement(Field, {
-    label: `Amount to Disburse (${cur})`
+    label: `Allocated — expected (${cur})`
   }, /*#__PURE__*/React.createElement("input", {
     type: "number",
     className: inp,
     value: f.amount,
-    onChange: set("amount")
-  })), /*#__PURE__*/React.createElement(Field, {
-    label: "Date"
+    onChange: set("amount"),
+    placeholder: "0.00"
+  })), !manyPays && /*#__PURE__*/React.createElement(Field, {
+    label: `Disbursed — actually paid (${cur})`
   }, /*#__PURE__*/React.createElement("input", {
-    type: "date",
-    className: inp,
-    value: f.date,
-    onChange: set("date")
-  }))), /*#__PURE__*/React.createElement("div", {
+    type: "number",
+    className: `${inp} border-rose-300 focus:border-rose-400 focus:ring-rose-100`,
+    value: paidOut,
+    onChange: e => setPaidOut(e.target.value),
+    placeholder: f.paymentStatus === "Paid" ? fmt(amt) : "0.00"
+  }))), /*#__PURE__*/React.createElement("p", {
+    className: "-mt-1 mb-4 text-[11px] text-slate-400"
+  }, /*#__PURE__*/React.createElement("b", {
+    className: "text-slate-500"
+  }, "Allocated"), " is what ", party, " is owed on this payment; ", /*#__PURE__*/React.createElement("b", {
+    className: "text-slate-500"
+  }, "Disbursed"), " is what has actually been paid out to them. The figure in the table is the ", /*#__PURE__*/React.createElement("b", null, "Disbursed"), " amount \u2014 edit it here."), /*#__PURE__*/React.createElement("div", {
     className: "grid grid-cols-1 sm:grid-cols-2 gap-x-4"
   }, /*#__PURE__*/React.createElement(Field, {
     label: "Status"
@@ -6115,14 +6123,13 @@ function CellDisbForm({
   }, ["Ongoing", "Hold", "Pending", "Overdue", "Paid"].map(s => /*#__PURE__*/React.createElement("option", {
     key: s,
     value: s
-  }, s)))), !manyPays && /*#__PURE__*/React.createElement(Field, {
-    label: `Paid Out So Far (${cur})`
+  }, s)))), /*#__PURE__*/React.createElement(Field, {
+    label: "Date"
   }, /*#__PURE__*/React.createElement("input", {
-    type: "number",
+    type: "date",
     className: inp,
-    value: paidOut,
-    onChange: e => setPaidOut(e.target.value),
-    placeholder: f.paymentStatus === "Paid" ? fmt(amt) : "0.00"
+    value: f.date,
+    onChange: set("date")
   }))), manyPays && /*#__PURE__*/React.createElement("p", {
     className: "-mt-2 mb-4 text-[11px] text-slate-500"
   }, existingPays.length, " payments totalling ", csym(cur), " ", fmt(existingPays.reduce((s, q) => s + Number(q.amount || 0), 0)), " are recorded against this disbursement. Edit them individually on the Disbursements tab."), f.paymentStatus === "Paid" && !manyPays && !String(paidOut).trim() && /*#__PURE__*/React.createElement("p", {
@@ -6160,7 +6167,7 @@ function CellDisbForm({
     onClick: onDelete,
     className: "px-4 py-2 rounded-lg text-sm font-medium border border-rose-200 text-rose-600 hover:bg-rose-50"
   }, "Delete"), /*#__PURE__*/React.createElement("button", {
-    disabled: !amt,
+    disabled: !amt && !paid,
     onClick: save,
     className: "flex-1 bg-rose-600 hover:bg-rose-500 disabled:opacity-40 text-white py-2 rounded-lg text-sm font-medium shadow-sm"
   }, initial ? "Save Disbursement" : "Record Disbursement")));
