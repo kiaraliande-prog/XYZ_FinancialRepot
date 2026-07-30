@@ -2574,16 +2574,16 @@ function App() {
   }, /*#__PURE__*/React.createElement(AmtG, {
     v: allocTot.pending
   }))))))), /*#__PURE__*/React.createElement("div", {
-    className: "grid grid-cols-1 lg:grid-cols-2 gap-6"
-  }, /*#__PURE__*/React.createElement("div", {
     className: "bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm"
   }, /*#__PURE__*/React.createElement("div", {
-    className: "px-6 py-4 border-b border-slate-200 flex items-baseline justify-between"
+    className: "px-4 sm:px-6 lg:px-8 py-3 sm:py-4 border-b border-slate-200 flex items-baseline justify-between"
   }, /*#__PURE__*/React.createElement("h3", {
-    className: "font-serif text-lg text-slate-800"
+    className: "font-serif text-lg sm:text-xl text-slate-900 tracking-tight"
   }, "Party Balances"), /*#__PURE__*/React.createElement("span", {
-    className: "text-[10px] uppercase tracking-[0.2em] text-slate-400"
-  }, "USD")), /*#__PURE__*/React.createElement("table", {
+    className: "text-[9px] uppercase tracking-[0.2em] text-slate-400"
+  }, "USD")), /*#__PURE__*/React.createElement("div", {
+    className: "overflow-x-auto"
+  }, /*#__PURE__*/React.createElement("table", {
     className: "w-full text-sm"
   }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", {
     className: "border-b border-slate-200 bg-slate-50 text-[10px] uppercase tracking-[0.14em] text-slate-500"

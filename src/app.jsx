@@ -1256,12 +1256,12 @@ function App() {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
-                <div className="px-6 py-4 border-b border-slate-200 flex items-baseline justify-between">
-                  <h3 className="font-serif text-lg text-slate-800">Party Balances</h3>
-                  <span className="text-[10px] uppercase tracking-[0.2em] text-slate-400">USD</span>
+            <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
+                <div className="px-4 sm:px-6 lg:px-8 py-3 sm:py-4 border-b border-slate-200 flex items-baseline justify-between">
+                  <h3 className="font-serif text-lg sm:text-xl text-slate-900 tracking-tight">Party Balances</h3>
+                  <span className="text-[9px] uppercase tracking-[0.2em] text-slate-400">USD</span>
                 </div>
+                <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-slate-200 bg-slate-50 text-[10px] uppercase tracking-[0.14em] text-slate-500">
