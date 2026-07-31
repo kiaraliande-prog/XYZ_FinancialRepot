@@ -1280,8 +1280,11 @@ function App() {
     const hasInv = invList.length > 0;
     const invoiced = hasInv ? invList.reduce((s, i) => s + Number(i.amount || 0), 0) : received;
     const invoicedUSD = hasInv ? invList.reduce((s, i) => s + Number(i.amount || 0) * Number(i.rate || 1), 0) : receivedUSD;
+    // Agreement value is always the total invoiced (in the agreement currency).
     return {
       ...a,
+      totalValue: invoiced,
+      totalValueUSD: invoicedUSD,
       received,
       receivedUSD,
       invoiced,
@@ -1775,7 +1778,7 @@ function App() {
       blue: "#60a5fa"
     };
     const invoicedUSDsum = repAg.reduce((s, a) => s + Number(a.invoicedUSD || 0), 0);
-    const contractUSDsum = repAg.reduce((s, a) => s + Number(a.totalValue || 0) * (FX[a.currency] || 1), 0);
+    const contractUSDsum = repAg.reduce((s, a) => s + Number(a.totalValueUSD != null ? a.totalValueUSD : Number(a.totalValue || 0) * (FX[a.currency] || 1)), 0);
     // When every agreement in scope shares one non-USD currency, show the cover
     // figures in that currency with the USD conversion beneath for reference.
     const curs = [...new Set(repAg.map(a => a.currency))];
@@ -5584,6 +5587,39 @@ function AgreementForm({
     ...f,
     [k]: e.target.value
   });
+  // Every agreement carries at least one invoice; the agreement value is the
+  // total invoiced (in the agreement currency).
+  const [invoices, setInvoices] = useState(() => {
+    const src = initial && initial.invoices || [];
+    return src.length ? src.map(iv => ({
+      ...iv
+    })) : [{
+      id: uid(),
+      number: "",
+      date: initial && initial.date || new Date().toISOString().slice(0, 10),
+      amount: "",
+      rate: "",
+      dueDate: "",
+      notes: ""
+    }];
+  });
+  const [invErr, setInvErr] = useState("");
+  const setInv = (id, k, v) => setInvoices(l => l.map(iv => iv.id === id ? {
+    ...iv,
+    [k]: v
+  } : iv));
+  const addInv = () => setInvoices(l => [...l, {
+    id: uid(),
+    number: "",
+    date: f.date,
+    amount: "",
+    rate: "",
+    dueDate: "",
+    notes: ""
+  }]);
+  const rmInv = id => setInvoices(l => l.length > 1 ? l.filter(iv => iv.id !== id) : l);
+  const invTotal = invoices.reduce((s, iv) => s + (Number(iv.amount) || 0), 0);
+  const invRate = () => f.currency === "USD" ? 1 : FX[f.currency] || 1;
   const locked = new Set(lockedParties || []);
   const agClosed = isLocked(f);
   const partyOpts = parties.filter(p => p.type === "disbursement" || p.type === "both").map(p => p.name).sort(orderPartyName);
@@ -5611,7 +5647,7 @@ function AgreementForm({
     return c;
   });
   const allocTotal = rows.reduce((t, n) => t + (Number(allocs[n]) || 0), 0);
-  const contract = Number(f.totalValue) || 0;
+  const contract = invTotal;
   const variance = contract - allocTotal;
   return /*#__PURE__*/React.createElement(Modal, {
     title: initial ? "Edit Agreement" : "New Agreement",
@@ -5660,13 +5696,10 @@ function AgreementForm({
   }, currencies.map(c => /*#__PURE__*/React.createElement("option", {
     key: c.code
   }, c.code)))), /*#__PURE__*/React.createElement(Field, {
-    label: "Total Agreement Value"
-  }, /*#__PURE__*/React.createElement("input", {
-    type: "number",
-    className: inp,
-    value: f.totalValue,
-    onChange: set("totalValue")
-  })), /*#__PURE__*/React.createElement(Field, {
+    label: "Agreement Value (= total invoiced)"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: `${inp} bg-slate-50 text-slate-700 tabular-nums`
+  }, f.currency, " ", fmt(invTotal))), /*#__PURE__*/React.createElement(Field, {
     label: "Agreement Status"
   }, /*#__PURE__*/React.createElement("select", {
     className: inp,
@@ -5683,6 +5716,80 @@ function AgreementForm({
   }, PAY_STATUSES.map(s => /*#__PURE__*/React.createElement("option", {
     key: s
   }, s))))), /*#__PURE__*/React.createElement("div", {
+    className: "mb-4 border border-slate-200 rounded-lg overflow-hidden"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "px-3 py-2 bg-slate-50 border-b border-slate-200 flex items-baseline justify-between gap-2"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "text-[10px] font-semibold text-slate-500 uppercase tracking-[0.14em]"
+  }, "Invoices"), /*#__PURE__*/React.createElement("span", {
+    className: "text-[10px] text-slate-400"
+  }, "at least one required \xB7 agreement value = total invoiced")), /*#__PURE__*/React.createElement("div", {
+    className: "overflow-x-auto"
+  }, /*#__PURE__*/React.createElement("table", {
+    className: "w-full text-sm"
+  }, /*#__PURE__*/React.createElement("thead", {
+    className: "text-[10px] uppercase text-slate-400"
+  }, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", {
+    className: "text-left px-3 py-1.5"
+  }, "Invoice #"), /*#__PURE__*/React.createElement("th", {
+    className: "text-left px-3 py-1.5"
+  }, "Date"), /*#__PURE__*/React.createElement("th", {
+    className: "text-right px-3 py-1.5"
+  }, "Amount (", f.currency, ")"), f.currency !== "USD" && /*#__PURE__*/React.createElement("th", {
+    className: "text-right px-3 py-1.5"
+  }, "Rate\u2192USD"), /*#__PURE__*/React.createElement("th", {
+    className: "w-8"
+  }))), /*#__PURE__*/React.createElement("tbody", null, invoices.map(iv => /*#__PURE__*/React.createElement("tr", {
+    key: iv.id,
+    className: "border-t border-slate-100"
+  }, /*#__PURE__*/React.createElement("td", {
+    className: "px-3 py-1.5"
+  }, /*#__PURE__*/React.createElement("input", {
+    value: iv.number,
+    onChange: e => setInv(iv.id, "number", e.target.value),
+    placeholder: "INV-\u2026",
+    className: "w-28 border border-slate-200 rounded px-2 py-1 text-sm"
+  })), /*#__PURE__*/React.createElement("td", {
+    className: "px-3 py-1.5"
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "date",
+    value: iv.date,
+    onChange: e => setInv(iv.id, "date", e.target.value),
+    className: "border border-slate-200 rounded px-2 py-1 text-sm"
+  })), /*#__PURE__*/React.createElement("td", {
+    className: "px-3 py-1.5 text-right"
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "number",
+    step: "0.01",
+    value: iv.amount,
+    onChange: e => setInv(iv.id, "amount", e.target.value),
+    placeholder: "0.00",
+    className: "w-32 border border-slate-200 rounded px-2 py-1 text-sm text-right tabular-nums"
+  })), f.currency !== "USD" && /*#__PURE__*/React.createElement("td", {
+    className: "px-3 py-1.5 text-right"
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "number",
+    step: "0.0001",
+    value: iv.rate,
+    onChange: e => setInv(iv.id, "rate", e.target.value),
+    placeholder: invRate().toFixed(4),
+    className: "w-24 border border-slate-200 rounded px-2 py-1 text-sm text-right tabular-nums"
+  })), /*#__PURE__*/React.createElement("td", {
+    className: "px-2 py-1.5 text-right"
+  }, invoices.length > 1 && /*#__PURE__*/React.createElement("button", {
+    onClick: () => rmInv(iv.id),
+    title: "Remove invoice",
+    className: "text-slate-300 hover:text-rose-500"
+  }, "\u2715"))))))), /*#__PURE__*/React.createElement("div", {
+    className: "px-3 py-2 bg-slate-50/70 border-t border-slate-200 flex items-center justify-between"
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: addInv,
+    className: "text-blue-700 text-xs"
+  }, "+ Add invoice"), /*#__PURE__*/React.createElement("span", {
+    className: "text-xs text-slate-500"
+  }, "Agreement value ", /*#__PURE__*/React.createElement("b", {
+    className: "text-slate-800 tabular-nums ml-1"
+  }, f.currency, " ", fmt(invTotal))))), /*#__PURE__*/React.createElement("div", {
     className: "mb-4 border border-slate-200 rounded-lg overflow-hidden"
   }, /*#__PURE__*/React.createElement("div", {
     className: "px-3 py-2 bg-slate-50 border-b border-slate-200 flex items-baseline justify-between gap-2"
@@ -5831,9 +5938,30 @@ function AgreementForm({
     rows: 2,
     value: f.comment || "",
     onChange: set("comment")
-  })), /*#__PURE__*/React.createElement("button", {
-    disabled: !f.title || !f.party,
-    onClick: () => onSave(f, allocs),
+  })), invErr && /*#__PURE__*/React.createElement("p", {
+    className: "mb-3 px-3 py-2 bg-rose-50 border border-rose-200 rounded-lg text-[11px] text-rose-700"
+  }, invErr), /*#__PURE__*/React.createElement("button", {
+    disabled: !f.title || !f.party || invTotal <= 0,
+    onClick: () => {
+      const clean = invoices.filter(iv => Number(iv.amount) > 0).map(iv => ({
+        id: iv.id || uid(),
+        number: String(iv.number || "").trim(),
+        date: iv.date || f.date,
+        dueDate: iv.dueDate || "",
+        amount: Number(iv.amount),
+        rate: Number(iv.rate) || invRate(),
+        notes: iv.notes || ""
+      }));
+      if (!clean.length) {
+        setInvErr("Add at least one invoice with an amount — the agreement value comes from its invoices.");
+        return;
+      }
+      onSave({
+        ...f,
+        invoices: clean,
+        totalValue: clean.reduce((s, iv) => s + iv.amount, 0)
+      }, allocs);
+    },
     className: "w-full bg-slate-900 hover:bg-slate-700 disabled:opacity-40 text-white py-2 rounded-lg text-sm font-medium shadow-sm"
   }, "Save Agreement"), /*#__PURE__*/React.createElement("p", {
     className: "text-[10px] text-slate-400 mt-2 text-center"

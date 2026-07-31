@@ -622,7 +622,8 @@ function App() {
     const hasInv = invList.length > 0;
     const invoiced = hasInv ? invList.reduce((s, i) => s + Number(i.amount || 0), 0) : received;
     const invoicedUSD = hasInv ? invList.reduce((s, i) => s + Number(i.amount || 0) * Number(i.rate || 1), 0) : receivedUSD;
-    return { ...a, received, receivedUSD, invoiced, invoicedUSD, hasInvoices: hasInv, outstandingUSD: invoicedUSD - receivedUSD, disbursedUSD, allocatedUSD, undisbursedUSD: receivedUSD - disbursedUSD };
+    // Agreement value is always the total invoiced (in the agreement currency).
+    return { ...a, totalValue: invoiced, totalValueUSD: invoicedUSD, received, receivedUSD, invoiced, invoicedUSD, hasInvoices: hasInv, outstandingUSD: invoicedUSD - receivedUSD, disbursedUSD, allocatedUSD, undisbursedUSD: receivedUSD - disbursedUSD };
   });
 
   const hiddenIds = new Set(data.agreements.filter((a) => a.hidden).map((a) => a.id));
@@ -904,7 +905,7 @@ function App() {
     // reports keep the funds-flow rubrics.
     const CK = { emerald: "#34d399", rose: "#fb7185", slate: "#cbd5e1", blue: "#60a5fa" };
     const invoicedUSDsum = repAg.reduce((s, a) => s + Number(a.invoicedUSD || 0), 0);
-    const contractUSDsum = repAg.reduce((s, a) => s + Number(a.totalValue || 0) * (FX[a.currency] || 1), 0);
+    const contractUSDsum = repAg.reduce((s, a) => s + Number(a.totalValueUSD != null ? a.totalValueUSD : Number(a.totalValue || 0) * (FX[a.currency] || 1)), 0);
     // When every agreement in scope shares one non-USD currency, show the cover
     // figures in that currency with the USD conversion beneath for reference.
     const curs = [...new Set(repAg.map((a) => a.currency))];
@@ -2562,6 +2563,18 @@ function AgreementForm({ initial, nextRef, currencies, parties, addParty, existi
   const [adding, setAdding] = useState(false);
   const [newParty, setNewParty] = useState("");
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  // Every agreement carries at least one invoice; the agreement value is the
+  // total invoiced (in the agreement currency).
+  const [invoices, setInvoices] = useState(() => {
+    const src = (initial && initial.invoices) || [];
+    return src.length ? src.map((iv) => ({ ...iv })) : [{ id: uid(), number: "", date: (initial && initial.date) || new Date().toISOString().slice(0, 10), amount: "", rate: "", dueDate: "", notes: "" }];
+  });
+  const [invErr, setInvErr] = useState("");
+  const setInv = (id, k, v) => setInvoices((l) => l.map((iv) => (iv.id === id ? { ...iv, [k]: v } : iv)));
+  const addInv = () => setInvoices((l) => [...l, { id: uid(), number: "", date: f.date, amount: "", rate: "", dueDate: "", notes: "" }]);
+  const rmInv = (id) => setInvoices((l) => (l.length > 1 ? l.filter((iv) => iv.id !== id) : l));
+  const invTotal = invoices.reduce((s, iv) => s + (Number(iv.amount) || 0), 0);
+  const invRate = () => (f.currency === "USD" ? 1 : (FX[f.currency] || 1));
   const locked = new Set(lockedParties || []);
   const agClosed = isLocked(f);
   const partyOpts = parties.filter((p) => p.type === "disbursement" || p.type === "both").map((p) => p.name).sort(orderPartyName);
@@ -2576,7 +2589,7 @@ function AgreementForm({ initial, nextRef, currencies, parties, addParty, existi
   const setAmt = (name, v) => setAllocs((a) => ({ ...a, [name]: v === "" ? "" : Number(v) }));
   const dropRow = (name) => setAllocs((a) => { const c = { ...a }; delete c[name]; return c; });
   const allocTotal = rows.reduce((t, n) => t + (Number(allocs[n]) || 0), 0);
-  const contract = Number(f.totalValue) || 0;
+  const contract = invTotal;
   const variance = contract - allocTotal;
   return (
     <Modal title={initial ? "Edit Agreement" : "New Agreement"} onClose={onClose}>
@@ -2588,9 +2601,36 @@ function AgreementForm({ initial, nextRef, currencies, parties, addParty, existi
       <Field label="Client / Counterparty"><input className={inp} value={f.party} onChange={(e) => setF({ ...f, party: e.target.value })} placeholder="e.g. Amufert SA" /></Field>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4">
         <Field label="Currency"><select className={inp} value={f.currency} onChange={set("currency")}>{currencies.map((c) => <option key={c.code}>{c.code}</option>)}</select></Field>
-        <Field label="Total Agreement Value"><input type="number" className={inp} value={f.totalValue} onChange={set("totalValue")} /></Field>
+        <Field label="Agreement Value (= total invoiced)"><div className={`${inp} bg-slate-50 text-slate-700 tabular-nums`}>{f.currency} {fmt(invTotal)}</div></Field>
         <Field label="Agreement Status"><select className={inp} value={f.status} onChange={set("status")}>{AG_STATUSES.map((s) => <option key={s}>{s}</option>)}</select></Field>
         <Field label="Payment Status"><select className={inp} value={f.paymentStatus || "Ongoing"} onChange={set("paymentStatus")}>{PAY_STATUSES.map((s) => <option key={s}>{s}</option>)}</select></Field>
+      </div>
+
+      <div className="mb-4 border border-slate-200 rounded-lg overflow-hidden">
+        <div className="px-3 py-2 bg-slate-50 border-b border-slate-200 flex items-baseline justify-between gap-2">
+          <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-[0.14em]">Invoices</span>
+          <span className="text-[10px] text-slate-400">at least one required · agreement value = total invoiced</span>
+        </div>
+        <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="text-[10px] uppercase text-slate-400"><tr><th className="text-left px-3 py-1.5">Invoice #</th><th className="text-left px-3 py-1.5">Date</th><th className="text-right px-3 py-1.5">Amount ({f.currency})</th>{f.currency !== "USD" && <th className="text-right px-3 py-1.5">Rate→USD</th>}<th className="w-8"></th></tr></thead>
+          <tbody>
+            {invoices.map((iv) => (
+              <tr key={iv.id} className="border-t border-slate-100">
+                <td className="px-3 py-1.5"><input value={iv.number} onChange={(e) => setInv(iv.id, "number", e.target.value)} placeholder="INV-…" className="w-28 border border-slate-200 rounded px-2 py-1 text-sm" /></td>
+                <td className="px-3 py-1.5"><input type="date" value={iv.date} onChange={(e) => setInv(iv.id, "date", e.target.value)} className="border border-slate-200 rounded px-2 py-1 text-sm" /></td>
+                <td className="px-3 py-1.5 text-right"><input type="number" step="0.01" value={iv.amount} onChange={(e) => setInv(iv.id, "amount", e.target.value)} placeholder="0.00" className="w-32 border border-slate-200 rounded px-2 py-1 text-sm text-right tabular-nums" /></td>
+                {f.currency !== "USD" && <td className="px-3 py-1.5 text-right"><input type="number" step="0.0001" value={iv.rate} onChange={(e) => setInv(iv.id, "rate", e.target.value)} placeholder={invRate().toFixed(4)} className="w-24 border border-slate-200 rounded px-2 py-1 text-sm text-right tabular-nums" /></td>}
+                <td className="px-2 py-1.5 text-right">{invoices.length > 1 && <button onClick={() => rmInv(iv.id)} title="Remove invoice" className="text-slate-300 hover:text-rose-500">✕</button>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        </div>
+        <div className="px-3 py-2 bg-slate-50/70 border-t border-slate-200 flex items-center justify-between">
+          <button onClick={addInv} className="text-blue-700 text-xs">+ Add invoice</button>
+          <span className="text-xs text-slate-500">Agreement value <b className="text-slate-800 tabular-nums ml-1">{f.currency} {fmt(invTotal)}</b></span>
+        </div>
       </div>
 
       <div className="mb-4 border border-slate-200 rounded-lg overflow-hidden">
@@ -2661,7 +2701,12 @@ function AgreementForm({ initial, nextRef, currencies, parties, addParty, existi
       </div>
 
       <Field label="Comment"><textarea className={inp} rows={2} value={f.comment || ""} onChange={set("comment")} /></Field>
-      <button disabled={!f.title || !f.party} onClick={() => onSave(f, allocs)} className="w-full bg-slate-900 hover:bg-slate-700 disabled:opacity-40 text-white py-2 rounded-lg text-sm font-medium shadow-sm">Save Agreement</button>
+      {invErr && <p className="mb-3 px-3 py-2 bg-rose-50 border border-rose-200 rounded-lg text-[11px] text-rose-700">{invErr}</p>}
+      <button disabled={!f.title || !f.party || invTotal <= 0} onClick={() => {
+        const clean = invoices.filter((iv) => Number(iv.amount) > 0).map((iv) => ({ id: iv.id || uid(), number: String(iv.number || "").trim(), date: iv.date || f.date, dueDate: iv.dueDate || "", amount: Number(iv.amount), rate: Number(iv.rate) || invRate(), notes: iv.notes || "" }));
+        if (!clean.length) { setInvErr("Add at least one invoice with an amount — the agreement value comes from its invoices."); return; }
+        onSave({ ...f, invoices: clean, totalValue: clean.reduce((s, iv) => s + iv.amount, 0) }, allocs);
+      }} className="w-full bg-slate-900 hover:bg-slate-700 disabled:opacity-40 text-white py-2 rounded-lg text-sm font-medium shadow-sm">Save Agreement</button>
       <p className="text-[10px] text-slate-400 mt-2 text-center">Parties saved here appear as disbursement lines under this contract, where they can be edited, paid or deleted.</p>
     </Modal>
   );
