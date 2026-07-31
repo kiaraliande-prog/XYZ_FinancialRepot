@@ -119,6 +119,25 @@ const FX = {
   GBP: 1.27,
   AOA: 0.0011
 };
+// UAE Central Bank daily rates (USD per 1 unit), loaded from the same-origin
+// rates.json that a daily GitHub Action refreshes. Used only as the *default*
+// conversion rate for a transaction's date — every rate stays editable.
+let CB_RATES = {
+  byDate: {},
+  latest: {}
+};
+const setCbRates = r => {
+  if (r && typeof r === "object") CB_RATES = r;
+};
+const dayRate = (cur, date) => {
+  if (!cur || cur === "USD") return 1;
+  const bd = CB_RATES.byDate || {};
+  const ds = Object.keys(bd).filter(d => !date || d <= date).sort();
+  const src = ds.length ? bd[ds[ds.length - 1]] : CB_RATES.latest || {};
+  const r = src && Number(src[cur]);
+  if (r && isFinite(r)) return r;
+  return FX[cur] != null ? FX[cur] : "";
+};
 const Amt = ({
   v,
   sym = "$",
@@ -1100,6 +1119,22 @@ function App() {
       }
       const u = await stGet("fintrack-appurl-v1");
       if (u) setAppUrl(u);
+    })();
+  }, []);
+  // Load the UAE Central Bank daily rates (same-origin file, refreshed daily by
+  // a GitHub Action) to use as editable default conversion rates.
+  const [cbLoaded, setCbLoaded] = useState(0);
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await fetch("rates.json", {
+          cache: "no-store"
+        });
+        if (r.ok) {
+          setCbRates(await r.json());
+          setCbLoaded(n => n + 1);
+        }
+      } catch (e) {}
     })();
   }, []);
   useEffect(() => {
@@ -5497,7 +5532,7 @@ function NotesPanel({
     className: "text-rose-600 hover:text-rose-700 text-xs"
   }, "Delete")))))))));
 }
-const rateHint = cur => cur === "AED" ? "(fixed 0.2740 = 1/3.65 — editable)" : cur === "USD" ? "(1.00)" : "(rate to USD on the day — editable)";
+const rateHint = cur => cur === "USD" ? "(1.00)" : "(UAE Central Bank rate for the date — editable)";
 const defaultRate = (cur, currencies) => cur === "USD" ? 1 : currencies.find(c => c.code === cur)?.fixed ? currencies.find(c => c.code === cur).rate : "";
 function PartySelect({
   value,
@@ -5772,7 +5807,7 @@ function AgreementForm({
     step: "0.0001",
     value: iv.rate,
     onChange: e => setInv(iv.id, "rate", e.target.value),
-    placeholder: invRate().toFixed(4),
+    placeholder: (Number(dayRate(f.currency, iv.date)) || invRate()).toFixed(4),
     className: "w-24 border border-slate-200 rounded px-2 py-1 text-sm text-right tabular-nums"
   })), /*#__PURE__*/React.createElement("td", {
     className: "px-2 py-1.5 text-right"
@@ -5949,7 +5984,7 @@ function AgreementForm({
         date: iv.date || f.date,
         dueDate: iv.dueDate || "",
         amount: Number(iv.amount),
-        rate: Number(iv.rate) || invRate(),
+        rate: Number(iv.rate) || dayRate(f.currency, iv.date) || invRate(),
         notes: iv.notes || ""
       }));
       if (!clean.length) {
@@ -5984,7 +6019,7 @@ function InvoiceForm({
     number: suggestedNumber || "",
     dueDate: "",
     amount: "",
-    rate: defaultRate(cur, currencies),
+    rate: dayRate(cur, new Date().toISOString().slice(0, 10)) || defaultRate(cur, currencies),
     notes: ""
   });
   const [addToValue, setAddToValue] = useState(false);
@@ -6129,7 +6164,7 @@ function MoneyForm({
     id: uid(),
     date: new Date().toISOString().slice(0, 10),
     amount: "",
-    rate: defaultRate(currency, currencies),
+    rate: dayRate(currency, new Date().toISOString().slice(0, 10)) || defaultRate(currency, currencies),
     notes: "",
     invoiceId: autoPick ? autoPick.id : ""
   });
@@ -6399,7 +6434,7 @@ function CellDisbForm({
   onDelete
 }) {
   const cur = initial && initial.currency || agreement.currency;
-  const rate = defaultRate(cur, currencies);
+  const rate = dayRate(cur, initial && initial.date || new Date().toISOString().slice(0, 10)) || defaultRate(cur, currencies);
   const existingPays = initial && initial.payments || [];
   const manyPays = existingPays.length > 1;
   const [f, setF] = useState({
@@ -6572,7 +6607,7 @@ function TransferForm({
       ...f,
       accountId: id,
       currency: cur,
-      rate: defaultRate(cur, currencies)
+      rate: dayRate(cur, f.date) || defaultRate(cur, currencies)
     });
   };
   return /*#__PURE__*/React.createElement(Modal, {
@@ -6661,7 +6696,7 @@ function TransferForm({
     onChange: e => setF({
       ...f,
       currency: e.target.value,
-      rate: defaultRate(e.target.value, currencies)
+      rate: dayRate(e.target.value, f.date) || defaultRate(e.target.value, currencies)
     })
   }, currencies.map(c => /*#__PURE__*/React.createElement("option", {
     key: c.code

@@ -1,0 +1,36 @@
+name: Update UAE Central Bank rates
+
+# Pulls the UAE Central Bank daily exchange rates and commits them into
+# rates.json, which the app reads as the (editable) default conversion rate
+# for each transaction's date. Runs every day and can be triggered by hand.
+
+on:
+  schedule:
+    - cron: "20 5 * * *"   # ~09:20 Gulf time (UTC+4)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rates
+  cancel-in-progress: true
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch CBUAE rates and update rates.json
+        run: node .github/scripts/update-rates.mjs
+      - name: Commit if changed
+        run: |
+          if [ -n "$(git status --porcelain rates.json)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add rates.json
+            git commit -m "Update UAE Central Bank rates ($(date -u +%Y-%m-%d))"
+            git push
+          else
+            echo "No rate change today."
+          fi

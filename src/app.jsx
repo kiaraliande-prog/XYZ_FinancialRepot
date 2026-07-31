@@ -56,6 +56,20 @@ const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 
 const fmt = (n) => (isNaN(n) ? "0.00" : Number(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
 const csym = (c) => ({ USD: "$", EUR: "€", AED: "د.إ", GBP: "£", AOA: "Kz" }[c] || c);
 const FX = { USD: 1, EUR: 1.08232, AED: 1 / 3.65, GBP: 1.27, AOA: 0.0011 };
+// UAE Central Bank daily rates (USD per 1 unit), loaded from the same-origin
+// rates.json that a daily GitHub Action refreshes. Used only as the *default*
+// conversion rate for a transaction's date — every rate stays editable.
+let CB_RATES = { byDate: {}, latest: {} };
+const setCbRates = (r) => { if (r && typeof r === "object") CB_RATES = r; };
+const dayRate = (cur, date) => {
+  if (!cur || cur === "USD") return 1;
+  const bd = CB_RATES.byDate || {};
+  const ds = Object.keys(bd).filter((d) => !date || d <= date).sort();
+  const src = ds.length ? bd[ds[ds.length - 1]] : (CB_RATES.latest || {});
+  const r = src && Number(src[cur]);
+  if (r && isFinite(r)) return r;
+  return FX[cur] != null ? FX[cur] : "";
+};
 const Amt = ({ v, sym = "$", className = "" }) => {
   const n = Number(v || 0);
   return (
@@ -516,6 +530,10 @@ function App() {
   const [now, setNow] = useState(new Date());
   useEffect(() => { if (!notice) return; const t = setTimeout(() => setNotice(""), 6000); return () => clearTimeout(t); }, [notice]);
   useEffect(() => { (async () => { const r = await stGet("fintrack-release-v1"); if (r) { try { setRelease(JSON.parse(r)); } catch (e) {} } const u = await stGet("fintrack-appurl-v1"); if (u) setAppUrl(u); })(); }, []);
+  // Load the UAE Central Bank daily rates (same-origin file, refreshed daily by
+  // a GitHub Action) to use as editable default conversion rates.
+  const [cbLoaded, setCbLoaded] = useState(0);
+  useEffect(() => { (async () => { try { const r = await fetch("rates.json", { cache: "no-store" }); if (r.ok) { setCbRates(await r.json()); setCbLoaded((n) => n + 1); } } catch (e) {} })(); }, []);
   useEffect(() => { const id = setInterval(() => setNow(new Date()), 60000); return () => clearInterval(id); }, []);
 
   useEffect(() => {
@@ -2530,7 +2548,7 @@ function NotesPanel({ notes, users, agreements, onAdd, onEdit, onDelete }) {
   );
 }
 
-const rateHint = (cur) => (cur === "AED" ? "(fixed 0.2740 = 1/3.65 — editable)" : cur === "USD" ? "(1.00)" : "(rate to USD on the day — editable)");
+const rateHint = (cur) => (cur === "USD" ? "(1.00)" : "(UAE Central Bank rate for the date — editable)");
 const defaultRate = (cur, currencies) => (cur === "USD" ? 1 : currencies.find((c) => c.code === cur)?.fixed ? currencies.find((c) => c.code === cur).rate : "");
 
 function PartySelect({ value, onChange, type, parties, addParty }) {
@@ -2620,7 +2638,7 @@ function AgreementForm({ initial, nextRef, currencies, parties, addParty, existi
                 <td className="px-3 py-1.5"><input value={iv.number} onChange={(e) => setInv(iv.id, "number", e.target.value)} placeholder="INV-…" className="w-28 border border-slate-200 rounded px-2 py-1 text-sm" /></td>
                 <td className="px-3 py-1.5"><input type="date" value={iv.date} onChange={(e) => setInv(iv.id, "date", e.target.value)} className="border border-slate-200 rounded px-2 py-1 text-sm" /></td>
                 <td className="px-3 py-1.5 text-right"><input type="number" step="0.01" value={iv.amount} onChange={(e) => setInv(iv.id, "amount", e.target.value)} placeholder="0.00" className="w-32 border border-slate-200 rounded px-2 py-1 text-sm text-right tabular-nums" /></td>
-                {f.currency !== "USD" && <td className="px-3 py-1.5 text-right"><input type="number" step="0.0001" value={iv.rate} onChange={(e) => setInv(iv.id, "rate", e.target.value)} placeholder={invRate().toFixed(4)} className="w-24 border border-slate-200 rounded px-2 py-1 text-sm text-right tabular-nums" /></td>}
+                {f.currency !== "USD" && <td className="px-3 py-1.5 text-right"><input type="number" step="0.0001" value={iv.rate} onChange={(e) => setInv(iv.id, "rate", e.target.value)} placeholder={(Number(dayRate(f.currency, iv.date)) || invRate()).toFixed(4)} className="w-24 border border-slate-200 rounded px-2 py-1 text-sm text-right tabular-nums" /></td>}
                 <td className="px-2 py-1.5 text-right">{invoices.length > 1 && <button onClick={() => rmInv(iv.id)} title="Remove invoice" className="text-slate-300 hover:text-rose-500">✕</button>}</td>
               </tr>
             ))}
@@ -2703,7 +2721,7 @@ function AgreementForm({ initial, nextRef, currencies, parties, addParty, existi
       <Field label="Comment"><textarea className={inp} rows={2} value={f.comment || ""} onChange={set("comment")} /></Field>
       {invErr && <p className="mb-3 px-3 py-2 bg-rose-50 border border-rose-200 rounded-lg text-[11px] text-rose-700">{invErr}</p>}
       <button disabled={!f.title || !f.party || invTotal <= 0} onClick={() => {
-        const clean = invoices.filter((iv) => Number(iv.amount) > 0).map((iv) => ({ id: iv.id || uid(), number: String(iv.number || "").trim(), date: iv.date || f.date, dueDate: iv.dueDate || "", amount: Number(iv.amount), rate: Number(iv.rate) || invRate(), notes: iv.notes || "" }));
+        const clean = invoices.filter((iv) => Number(iv.amount) > 0).map((iv) => ({ id: iv.id || uid(), number: String(iv.number || "").trim(), date: iv.date || f.date, dueDate: iv.dueDate || "", amount: Number(iv.amount), rate: Number(iv.rate) || dayRate(f.currency, iv.date) || invRate(), notes: iv.notes || "" }));
         if (!clean.length) { setInvErr("Add at least one invoice with an amount — the agreement value comes from its invoices."); return; }
         onSave({ ...f, invoices: clean, totalValue: clean.reduce((s, iv) => s + iv.amount, 0) }, allocs);
       }} className="w-full bg-slate-900 hover:bg-slate-700 disabled:opacity-40 text-white py-2 rounded-lg text-sm font-medium shadow-sm">Save Agreement</button>
@@ -2714,7 +2732,7 @@ function AgreementForm({ initial, nextRef, currencies, parties, addParty, existi
 
 function InvoiceForm({ agreement, initial, currencies, suggestedNumber, suggestedFrom, onClose, onSave, onDelete }) {
   const cur = agreement.currency;
-  const [f, setF] = useState(initial || { id: uid(), date: new Date().toISOString().slice(0, 10), number: suggestedNumber || "", dueDate: "", amount: "", rate: defaultRate(cur, currencies), notes: "" });
+  const [f, setF] = useState(initial || { id: uid(), date: new Date().toISOString().slice(0, 10), number: suggestedNumber || "", dueDate: "", amount: "", rate: dayRate(cur, new Date().toISOString().slice(0, 10)) || defaultRate(cur, currencies), notes: "" });
   const [addToValue, setAddToValue] = useState(false);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const dupe = String(f.number || "").trim() && (agreement.invoices || []).some((q) => q.id !== f.id && String(q.number || "").trim().toLowerCase() === String(f.number).trim().toLowerCase());
@@ -2766,7 +2784,7 @@ function MoneyForm({ title, currency, currencies, initial, verb, invoices, recei
   const invList = invoices || [];
   const openBal = (iv) => Number(iv.amount || 0) - (receipts || []).filter((r) => r.invoiceId === iv.id).reduce((s, r) => s + Number(r.amount || 0), 0);
   const autoPick = [...invList].sort((x, y) => String(x.date || "").localeCompare(String(y.date || ""))).find((iv) => openBal(iv) > 0.005);
-  const [f, setF] = useState(initial || { id: uid(), date: new Date().toISOString().slice(0, 10), amount: "", rate: defaultRate(currency, currencies), notes: "", invoiceId: autoPick ? autoPick.id : "" });
+  const [f, setF] = useState(initial || { id: uid(), date: new Date().toISOString().slice(0, 10), amount: "", rate: dayRate(currency, new Date().toISOString().slice(0, 10)) || defaultRate(currency, currencies), notes: "", invoiceId: autoPick ? autoPick.id : "" });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const rows = summaryFor ? summaryFor({ amount: Number(f.amount) || 0, rate: Number(f.rate) || 0, invoiceId: f.invoiceId, id: f.id }) : null;
   const blockMsg = blockWhen ? blockWhen({ amount: Number(f.amount) || 0, id: f.id }) : null;
@@ -2861,7 +2879,7 @@ function DisbursementForm({ initial, presetAgreement, agreements, disbursements,
 
 function CellDisbForm({ agreement, receipt, party, initial, currencies, allDisb, onClose, onSave, onDelete }) {
   const cur = (initial && initial.currency) || agreement.currency;
-  const rate = defaultRate(cur, currencies);
+  const rate = dayRate(cur, (initial && initial.date) || new Date().toISOString().slice(0, 10)) || defaultRate(cur, currencies);
   const existingPays = (initial && initial.payments) || [];
   const manyPays = existingPays.length > 1;
   const [f, setF] = useState({
@@ -2944,7 +2962,7 @@ function TransferForm({ initial, presetFrom, parties, accounts, currencies, addP
   const pickAccount = (id) => {
     const acc = accounts.find((a) => a.id === id);
     const cur = acc ? acc.currency : f.currency;
-    setF({ ...f, accountId: id, currency: cur, rate: defaultRate(cur, currencies) });
+    setF({ ...f, accountId: id, currency: cur, rate: dayRate(cur, f.date) || defaultRate(cur, currencies) });
   };
   return (
     <Modal title={initial ? "Edit Transfer" : "New Onward Transfer"} onClose={onClose}>
@@ -2969,7 +2987,7 @@ function TransferForm({ initial, presetFrom, parties, accounts, currencies, addP
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4">
         <Field label="Date"><input type="date" className={inp} value={f.date} onChange={set("date")} /></Field>
         <Field label="Partial / Full"><select className={inp} value={f.payType} onChange={set("payType")}><option>Full</option><option>Partial</option></select></Field>
-        <Field label="Currency"><select className={inp} value={f.currency} onChange={(e) => setF({ ...f, currency: e.target.value, rate: defaultRate(e.target.value, currencies) })}>{currencies.map((c) => <option key={c.code}>{c.code}</option>)}</select></Field>
+        <Field label="Currency"><select className={inp} value={f.currency} onChange={(e) => setF({ ...f, currency: e.target.value, rate: dayRate(e.target.value, f.date) || defaultRate(e.target.value, currencies) })}>{currencies.map((c) => <option key={c.code}>{c.code}</option>)}</select></Field>
         <Field label={`Amount (${f.currency})`}><input type="number" className={inp} value={f.amount} onChange={set("amount")} /></Field>
       </div>
       <Field label={`Rate to USD ${rateHint(f.currency)}`}><input type="number" step="0.0001" className={inp} value={f.rate} onChange={set("rate")} /></Field>
