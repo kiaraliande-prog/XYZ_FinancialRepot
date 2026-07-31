@@ -1775,6 +1775,7 @@ function App() {
       blue: "#60a5fa"
     };
     const invoicedUSDsum = repAg.reduce((s, a) => s + Number(a.invoicedUSD || 0), 0);
+    const contractUSDsum = repAg.reduce((s, a) => s + Number(a.totalValue || 0) * (FX[a.currency] || 1), 0);
     const kpis = agScope ? [{
       l: "Invoiced",
       v: invoicedUSDsum,
@@ -1789,7 +1790,7 @@ function App() {
       c: CK.emerald
     }, {
       l: "Pending",
-      v: invoicedUSDsum - kReceived,
+      v: contractUSDsum - kReceived,
       c: CK.rose
     }] : [{
       l: "Received",

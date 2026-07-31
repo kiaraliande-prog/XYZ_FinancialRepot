@@ -904,12 +904,13 @@ function App() {
     // reports keep the funds-flow rubrics.
     const CK = { emerald: "#34d399", rose: "#fb7185", slate: "#cbd5e1", blue: "#60a5fa" };
     const invoicedUSDsum = repAg.reduce((s, a) => s + Number(a.invoicedUSD || 0), 0);
+    const contractUSDsum = repAg.reduce((s, a) => s + Number(a.totalValue || 0) * (FX[a.currency] || 1), 0);
     const kpis = agScope
       ? [
           { l: "Invoiced", v: invoicedUSDsum, c: CK.slate },
           { l: "Received", v: kReceived, c: CK.emerald },
           { l: "Disbursed", v: kDisbursed, c: CK.emerald },
-          { l: "Pending", v: invoicedUSDsum - kReceived, c: CK.rose },
+          { l: "Pending", v: contractUSDsum - kReceived, c: CK.rose },
         ]
       : [
           { l: "Received", v: kReceived, c: CK.emerald },
