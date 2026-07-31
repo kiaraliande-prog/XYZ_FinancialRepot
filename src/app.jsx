@@ -624,10 +624,13 @@ function App() {
     if (rows.length) return rows.reduce((s, p) => s + Number(p.amount || 0), 0);
     return (dd.paymentStatus || "") === "Paid" ? Number(dd.amount || 0) : 0;
   };
+  // Rate that turns a disbursement's allocation (held in the contract currency)
+  // into USD, using the CBUAE/Xe rate for its date and falling back to presets.
+  const allocRate = (dd) => dayRate(dd.currency, dd.date) || defaultRate(dd.currency, data.currencies) || 1;
   const disbPaidUSD = (dd) => {
     const rows = dd.payments || [];
     if (rows.length) return rows.reduce((s, p) => s + Number(p.amount || 0) * Number(p.rate || 0), 0);
-    return (dd.paymentStatus || "") === "Paid" ? Number(dd.amount || 0) * Number(defaultRate(dd.currency, data.currencies) || 1) : 0;
+    return (dd.paymentStatus || "") === "Paid" ? Number(dd.amount || 0) * allocRate(dd) : 0;
   };
 
   const agComputed = data.agreements.map((a) => {
@@ -635,7 +638,8 @@ function App() {
     const receivedUSD = (a.receipts || []).reduce((s, r) => s + Number(r.amount || 0) * Number(r.rate || 0), 0);
     const myDisb = data.disbursements.filter((dd) => dd.agreementId === a.id);
     const disbursedUSD = myDisb.reduce((s, dd) => s + disbPaidUSD(dd), 0);
-    const allocatedUSD = myDisb.reduce((s, dd) => s + Number(dd.amount || 0), 0);
+    // Allocations are held in the contract currency; convert to USD for the rollups.
+    const allocatedUSD = myDisb.reduce((s, dd) => s + Number(dd.amount || 0) * allocRate(dd), 0);
     const invList = a.invoices || [];
     const hasInv = invList.length > 0;
     const invoiced = hasInv ? invList.reduce((s, i) => s + Number(i.amount || 0), 0) : received;
@@ -652,7 +656,9 @@ function App() {
     const paid = disbPaid(dd);
     const paidUSD = disbPaidUSD(dd);
     const amount = Number(dd.amount || 0);
-    return { ...dd, agreementTitle: ag ? (ag.ref ? ag.ref + " · " : "") + ag.title : "—", paid, paidUSD, outstanding: amount - paid, paymentStatus: dd.paymentStatus || "Ongoing" };
+    // Allocation is in the contract currency; payments are in USD. Compare in USD.
+    const allocUSD = amount * allocRate(dd);
+    return { ...dd, agreementTitle: ag ? (ag.ref ? ag.ref + " · " : "") + ag.title : "—", paid, paidUSD, allocUSD, outstanding: amount - paid, outstandingUSD: allocUSD - paidUSD, paymentStatus: dd.paymentStatus || "Ongoing" };
   });
 
   const trComputed = data.transfers.map((t) => {
@@ -803,7 +809,7 @@ function App() {
   const buildStatement = (party) => {
     const rows = [
       ...disbComputed.filter((d) => d.party === party).flatMap((d) => (d.payments || []).map((p) => ({
-        date: p.date, kind: "in", desc: `Received — ${d.agreementTitle}${d.description ? ` · ${d.description}` : ""}`, currency: d.currency, amount: Number(p.amount), usd: Number(p.amount) * Number(p.rate), comment: p.notes || "",
+        date: p.date, kind: "in", desc: `Received — ${d.agreementTitle}${d.description ? ` · ${d.description}` : ""}`, currency: p.currency || d.currency, amount: Number(p.amount), usd: Number(p.amount) * Number(p.rate), comment: p.notes || "",
       }))),
       ...trComputed.filter((t) => t.fromParty === party).map((t) => ({
         date: t.date, kind: "out", desc: `Transfer out — ${t.accountName} (${t.accountCurrency}) · ${t.payType}`, currency: t.currency, amount: Number(t.amount), usd: t.usd, comment: t.notes || "",
@@ -836,8 +842,9 @@ function App() {
       const amt = Number(amtRaw) || 0;
       const idx = disb.findIndex((d) => d.agreementId === a.id && d.party === party);
       if (amt > 0) {
-        if (idx >= 0) disb[idx] = { ...disb[idx], amount: amt };
-        else disb.push({ id: uid(), agreementId: a.id, party, description: "Expected allocation", date: a.date, currency: "USD", amount: amt, paymentStatus: "Pending", feePercent: 0, comment: "", payments: [] });
+        // Allocations are entered and stored in the agreement's (contract) currency.
+        if (idx >= 0) disb[idx] = { ...disb[idx], amount: amt, currency: a.currency };
+        else disb.push({ id: uid(), agreementId: a.id, party, description: "Expected allocation", date: a.date, currency: a.currency, amount: amt, paymentStatus: "Pending", feePercent: 0, comment: "", payments: [] });
       } else if (idx >= 0 && (!disb[idx].payments || disb[idx].payments.length === 0)) {
         disb.splice(idx, 1);
       }
@@ -1038,7 +1045,7 @@ function App() {
     addStyledSheet("Invoices", xAg.flatMap((a) => (a.invoices || []).map((iv) => ({ "Invoice Date": iv.date, "Invoice #": iv.number || "", "Due Date": iv.dueDate || "", Agreement: a.title, Ref: a.ref, Client: a.party, Currency: a.currency, Amount: Number(iv.amount || 0), "Rate to USD": Number(iv.rate || 1), "USD Equivalent": Number(iv.amount || 0) * Number(iv.rate || 1), Received: (a.receipts || []).filter((r) => r.invoiceId === iv.id).reduce((t, r) => t + Number(r.amount || 0), 0), Comment: iv.notes || "" }))));
     addStyledSheet("Receipts", xAg.flatMap((a) => (a.receipts || []).map((r) => ({ Date: r.date, Agreement: a.title, Ref: a.ref, Client: a.party, Currency: a.currency, Amount: Number(r.amount), "Rate to USD": Number(r.rate), "USD Equivalent": r.amount * r.rate, Comment: r.notes || "" }))));
     addStyledSheet("Disbursements", xDisb.map((d) => ({ Date: d.date, Party: d.party, "Source Agreement": d.agreementTitle, Description: d.description || "", "Payment Status": d.paymentStatus, Currency: d.currency, "Allocated Amount": Number(d.amount), Paid: d.paid, Outstanding: d.outstanding, "Paid (USD)": d.paidUSD, Comment: d.comment || "" })));
-    addStyledSheet("Disb Payments", xDisb.flatMap((d) => (d.payments || []).map((p) => ({ Date: p.date, Party: d.party, "Source Agreement": d.agreementTitle, Currency: d.currency, Amount: Number(p.amount), "Rate to USD": Number(p.rate), "USD Equivalent": p.amount * p.rate, Comment: p.notes || "" }))));
+    addStyledSheet("Disb Payments", xDisb.flatMap((d) => (d.payments || []).map((p) => ({ Date: p.date, Party: d.party, "Source Agreement": d.agreementTitle, Currency: p.currency || d.currency, Amount: Number(p.amount), "Rate to USD": Number(p.rate), "USD Equivalent": p.amount * p.rate, Comment: p.notes || "" }))));
     addStyledSheet("Transfers", xTr.map((t) => ({ Date: t.date, "From Party": t.fromParty, "To Account": t.accountName, "Account Currency": t.accountCurrency, "Partial/Full": t.payType, "Transfer Currency": t.currency, Amount: Number(t.amount), "Rate to USD": Number(t.rate), "USD Equivalent": t.usd, Comment: t.notes || "" })));
     // Excel worksheet names must be unique and <= 31 chars, and cannot contain
     // \ / ? * [ ] :. Stripping those characters can make two different parties
@@ -1653,35 +1660,36 @@ function App() {
         });
       }} onClose={() => setModal(null)} onSave={(r) => { if (blockLocked(modal.payload.agreement.id)) { setModal(null); return; } const ag = data.agreements.find((x) => x.id === modal.payload.agreement.id); const receipts = (ag.receipts || []).some((q) => q.id === r.id) ? ag.receipts.map((q) => (q.id === r.id ? r : q)) : [...(ag.receipts || []), r]; upsert("agreements", { ...ag, receipts }); setModal(null); }} />}
       {modal?.type === "disbursement" && <DisbursementForm initial={modal.payload.edit} presetAgreement={modal.payload.presetAgreement} agreements={data.agreements} disbursements={data.disbursements} currencies={data.currencies} parties={data.parties} addParty={addParty} onClose={() => setModal(null)} onSave={(d) => { if (blockLocked(d.agreementId)) { setModal(null); return; } upsert("disbursements", d); setModal(null); }} />}
-      {modal?.type === "disbPayment" && <MoneyForm title={modal.payload.payment ? `Edit Payment to ${modal.payload.disb.party}` : `Payment to ${modal.payload.disb.party}`} currency={modal.payload.disb.currency} currencies={data.currencies} initial={modal.payload.payment} verb="Payment" summaryTitle="Effect on Disbursement" summaryFor={({ amount, id }) => {
+      {modal?.type === "disbPayment" && <MoneyForm title={modal.payload.payment ? `Edit Payment to ${modal.payload.disb.party}` : `Payment to ${modal.payload.disb.party}`} currency="USD" currencies={data.currencies} initial={modal.payload.payment} verb="Payment" summaryTitle="Effect on Disbursement" summaryFor={({ amount, id }) => {
         const dd = data.disbursements.find((x) => x.id === modal.payload.disb.id) || modal.payload.disb;
-        const cur = dd.currency;
+        // Payments are made in USD; the allocation is held in the contract currency.
         const others = (dd.payments || []).filter((q) => q.id !== id);
-        const before = others.reduce((s, q) => s + Number(q.amount || 0), 0);
+        const before = others.reduce((s, q) => s + Number(q.amount || 0) * Number(q.rate || 1), 0);
         const after = before + amount;
-        const due = Number(dd.amount || 0);
-        const left = due - after;
+        const dueUSD = Number(dd.amount || 0) * allocRate(dd);
+        const left = dueUSD - after;
+        const allocLabel = `${csym(dd.currency)} ${fmt(Number(dd.amount || 0))}${dd.currency !== "USD" ? ` ≈ $ ${fmt(dueUSD)}` : ""}`;
         return [
-          { label: "Paid before", value: `${csym(cur)} ${fmt(before)}` },
-          { label: "Paid after", value: `${csym(cur)} ${fmt(after)}`, bold: true },
-          { label: `Allocated to ${dd.party}`, value: `${csym(cur)} ${fmt(due)}` },
+          { label: "Paid before", value: `$ ${fmt(before)}` },
+          { label: "Paid after", value: `$ ${fmt(after)}`, bold: true },
+          { label: `Allocated to ${dd.party}`, value: allocLabel },
           left < -0.005
-            ? { label: "Overpaid by", value: `${csym(cur)} ${fmt(Math.abs(left))}`, bold: true, danger: true }
-            : { label: "Still to pay", value: `${csym(cur)} ${fmt(left)}`, bold: true },
+            ? { label: "Overpaid by", value: `$ ${fmt(Math.abs(left))}`, bold: true, danger: true }
+            : { label: "Still to pay", value: `$ ${fmt(left)}`, bold: true },
         ];
       }} blockWhen={({ amount, id }) => {
         const dd = data.disbursements.find((x) => x.id === modal.payload.disb.id) || modal.payload.disb;
-        const due = Number(dd.amount || 0);
-        const before = (dd.payments || []).filter((q) => q.id !== id).reduce((s, q) => s + Number(q.amount || 0), 0);
-        if (before + amount > due + 0.005) return `This would pay ${csym(dd.currency)} ${fmt(before + amount)} to ${dd.party}, exceeding the allocation of ${csym(dd.currency)} ${fmt(due)}. Increase the allocation for ${dd.party} first (edit the agreement's parties or the Allocated amount), then record this payment.`;
+        const dueUSD = Number(dd.amount || 0) * allocRate(dd);
+        const before = (dd.payments || []).filter((q) => q.id !== id).reduce((s, q) => s + Number(q.amount || 0) * Number(q.rate || 1), 0);
+        if (before + amount > dueUSD + 0.005) return `This would pay $ ${fmt(before + amount)} to ${dd.party}, exceeding the allocation of ${csym(dd.currency)} ${fmt(Number(dd.amount || 0))}${dd.currency !== "USD" ? ` (≈ $ ${fmt(dueUSD)})` : ""}. Increase the allocation for ${dd.party} first (edit the agreement's parties or the Allocated amount), then record this payment.`;
         return null;
       }} onDelete={() => {
         const pay = modal.payload.payment; const dId = modal.payload.disb.id; setModal(null);
-        ask(`Delete this payment of ${csym(modal.payload.disb.currency)} ${fmt(pay.amount)} to ${modal.payload.disb.party}?`, () => {
+        ask(`Delete this payment of ${csym(pay.currency || modal.payload.disb.currency)} ${fmt(pay.amount)} to ${modal.payload.disb.party}?`, () => {
           const dd = data.disbursements.find((x) => x.id === dId);
           if (dd) upsert("disbursements", { ...dd, payments: (dd.payments || []).filter((q) => q.id !== pay.id) });
         });
-      }} onClose={() => setModal(null)} onSave={(p) => { if (blockLocked(modal.payload.disb.agreementId)) { setModal(null); return; } const dd = data.disbursements.find((x) => x.id === modal.payload.disb.id); const payments = (dd.payments || []).some((q) => q.id === p.id) ? dd.payments.map((q) => (q.id === p.id ? p : q)) : [...(dd.payments || []), p]; upsert("disbursements", { ...dd, payments }); setModal(null); }} />}
+      }} onClose={() => setModal(null)} onSave={(p) => { if (blockLocked(modal.payload.disb.agreementId)) { setModal(null); return; } const dd = data.disbursements.find((x) => x.id === modal.payload.disb.id); const stamped = modal.payload.payment ? p : { ...p, currency: "USD" }; const payments = (dd.payments || []).some((q) => q.id === stamped.id) ? dd.payments.map((q) => (q.id === stamped.id ? stamped : q)) : [...(dd.payments || []), stamped]; upsert("disbursements", { ...dd, payments }); setModal(null); }} />}
       {modal?.type === "cellDisb" && <CellDisbForm agreement={modal.payload.agreement} receipt={modal.payload.receipt} party={modal.payload.party} initial={modal.payload.disbId ? data.disbursements.find((x) => x.id === modal.payload.disbId) : null} currencies={data.currencies} allDisb={data.disbursements} onClose={() => setModal(null)}
         onSave={(dd) => { if (blockLocked(modal.payload.agreement.id)) { setModal(null); return; } upsert("disbursements", dd); setModal(null); }}
         onDelete={() => { const id = modal.payload.disbId; const party = modal.payload.party; setModal(null); ask(`Delete the disbursement to ${party} on this agreement? Payments recorded against it are removed too.`, () => remove("disbursements", id)); }} />}
@@ -1798,8 +1806,8 @@ function DisbTab({ fDisb, data, agNum, collapsedAg, setCollapsedAg, expanded, se
                         <div className="text-right leading-tight">
                           <div className="text-sm font-semibold text-slate-800 tabular-nums"><span className="text-slate-400 font-normal text-xs mr-1">{d.currency}</span>{fmt(d.amount)}</div>
                           <div className="flex items-center justify-end gap-1.5 mt-0.5 text-[10px]">
-                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600 tabular-nums"><span className="uppercase tracking-wide opacity-70">Paid</span>{fmt(d.paid)}</span>
-                            <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded tabular-nums ${d.outstanding > 0.005 ? "bg-rose-50 text-rose-600" : "bg-slate-100 text-slate-400"}`}><span className="uppercase tracking-wide opacity-70">Due</span>{fmt(d.outstanding)}</span>
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600 tabular-nums"><span className="uppercase tracking-wide opacity-70">Paid</span>$ {fmt(d.paidUSD)}</span>
+                            <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded tabular-nums ${d.outstandingUSD > 0.005 ? "bg-rose-50 text-rose-600" : "bg-slate-100 text-slate-400"}`}><span className="uppercase tracking-wide opacity-70">Due</span>$ {fmt(d.outstandingUSD)}</span>
                           </div>
                         </div>
                         <span className={`w-6 h-6 flex items-center justify-center rounded-full text-[10px] text-slate-400 hover:bg-slate-100 transition-transform ${expanded === d.id ? "rotate-180" : ""}`}>▼</span>
@@ -1811,7 +1819,7 @@ function DisbTab({ fDisb, data, agNum, collapsedAg, setCollapsedAg, expanded, se
                         <div className="overflow-x-auto">
                           <table className="w-full text-sm bg-white rounded-lg border border-slate-200 min-w-[680px] overflow-hidden">
                             <thead className="text-xs text-slate-500 uppercase bg-slate-100">
-                              <tr><th className="text-left px-3 py-1.5">Payment Date</th><th className="text-left px-3 py-1.5">Invoice #</th><th className="text-right px-3 py-1.5">Amount ({d.currency})</th><th className="text-right px-3 py-1.5">Rate → USD</th><th className="text-right px-3 py-1.5">USD Equivalent</th><th className="text-left px-3 py-1.5">Comment</th><th></th></tr>
+                              <tr><th className="text-left px-3 py-1.5">Payment Date</th><th className="text-left px-3 py-1.5">Invoice #</th><th className="text-right px-3 py-1.5">Amount paid</th><th className="text-right px-3 py-1.5">Rate → USD</th><th className="text-right px-3 py-1.5">USD Equivalent</th><th className="text-left px-3 py-1.5">Comment</th><th></th></tr>
                             </thead>
                             <tbody>
                               {(d.payments || []).length === 0 && <tr><td colSpan={7} className="px-3 py-3 text-center text-slate-400 text-xs">No payments made yet.</td></tr>}
@@ -1819,7 +1827,7 @@ function DisbTab({ fDisb, data, agNum, collapsedAg, setCollapsedAg, expanded, se
                                 <tr key={p.id} className="border-t border-slate-100">
                                   <td className="px-3 py-1.5 whitespace-nowrap">{p.date}</td>
                                   <td className="px-3 py-1.5"><input defaultValue={p.invoiceNo || ""} onBlur={(e) => updateDisbPayment(d.id, p.id, { invoiceNo: e.target.value })} readOnly={agLock} placeholder="Inv #" className={`w-24 rounded px-1 py-0.5 text-xs border ${agLock ? "border-transparent bg-transparent text-slate-500 cursor-not-allowed" : "border-transparent hover:border-slate-200 focus:border-slate-300"}`} /></td>
-                                  <td className="px-3 py-1.5 text-right">{csym(d.currency)} {fmt(p.amount)}</td>
+                                  <td className="px-3 py-1.5 text-right">{csym(p.currency || d.currency)} {fmt(p.amount)}</td>
                                   <td className="px-3 py-1.5 text-right">{Number(p.rate).toFixed(4)}</td>
                                   <td className="px-3 py-1.5 text-right font-medium">$ {fmt(p.amount * p.rate)}</td>
                                   <td className="px-3 py-1.5"><input defaultValue={p.notes || ""} onBlur={(e) => updateDisbPayment(d.id, p.id, { notes: e.target.value })} readOnly={agLock} placeholder={agLock ? "" : "…"} className={`w-32 rounded px-1 py-0.5 text-xs border ${agLock ? "border-transparent bg-transparent text-slate-500 cursor-not-allowed" : "border-transparent hover:border-slate-200 focus:border-slate-300"}`} /></td>
@@ -1868,7 +1876,7 @@ function PartiesTab({ allPartyNames, partyPick, setPartyPick, selectedParty, set
   if (selectedParty) {
     const b = partyBalances[selectedParty] || { inUSD: 0, outUSD: 0 };
     const stRows = [
-      ...disbComputed.filter((d) => d.party === selectedParty).flatMap((d) => (d.payments || []).map((p) => ({ date: p.date, kind: "in", desc: `Received — ${d.agreementTitle}${d.description ? ` · ${d.description}` : ""}`, currency: d.currency, amount: Number(p.amount), usd: Number(p.amount) * Number(p.rate), comment: p.notes || "" }))),
+      ...disbComputed.filter((d) => d.party === selectedParty).flatMap((d) => (d.payments || []).map((p) => ({ date: p.date, kind: "in", desc: `Received — ${d.agreementTitle}${d.description ? ` · ${d.description}` : ""}`, currency: p.currency || d.currency, amount: Number(p.amount), usd: Number(p.amount) * Number(p.rate), comment: p.notes || "" }))),
       ...trComputed.filter((t) => t.fromParty === selectedParty).map((t) => ({ date: t.date, kind: "out", desc: `Transfer out — ${t.accountName} (${t.accountCurrency}) · ${t.payType}`, currency: t.currency, amount: Number(t.amount), usd: t.usd, comment: t.notes || "" })),
     ].sort((a, b2) => (a.date || "").localeCompare(b2.date || ""));
     let run = 0;
@@ -2654,7 +2662,7 @@ function AgreementForm({ initial, nextRef, currencies, parties, addParty, existi
       <div className="mb-4 border border-slate-200 rounded-lg overflow-hidden">
         <div className="px-3 py-2 bg-slate-50 border-b border-slate-200 flex items-baseline justify-between gap-2">
           <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-[0.14em]">Associated Parties</span>
-          <span className="text-[10px] text-slate-400">{rows.length} allocated · amounts in USD</span>
+          <span className="text-[10px] text-slate-400">{rows.length} allocated · amounts in {f.currency}</span>
         </div>
         {agClosed && <p className="px-3 py-2 bg-amber-50 border-b border-amber-200 text-[11px] text-amber-800">Locked while the status is <b>{f.archived && f.status !== "Closed" ? "Archived" : f.status}</b>. Set Agreement Status to Ongoing{f.archived ? " and unarchive it" : ""} to change party allocations.</p>}
         {rows.length === 0 ? (
@@ -2672,7 +2680,7 @@ function AgreementForm({ initial, nextRef, currencies, parties, addParty, existi
                   </td>
                   <td className="px-3 py-2 w-40">
                     <span className="flex items-baseline gap-1">
-                      <span className="text-slate-400 text-xs">$</span>
+                      <span className="text-slate-400 text-xs">{csym(f.currency)}</span>
                       <input type="number" step="0.01" value={allocs[name]} onChange={(e) => setAmt(name, e.target.value)} readOnly={agClosed} className={`w-full rounded px-2 py-1 text-sm text-right tabular-nums border ${agClosed ? "border-transparent bg-transparent text-slate-500 cursor-not-allowed" : "border-slate-200 focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-100"}`} />
                     </span>
                   </td>
@@ -2702,14 +2710,14 @@ function AgreementForm({ initial, nextRef, currencies, parties, addParty, existi
                 {available.map((n) => <option key={n} value={n}>{n}</option>)}
                 <option value="__add__">＋ Add new party…</option>
               </select>
-              <input type="number" step="0.01" value={pickAmt} onChange={(e) => setPickAmt(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && pickParty) addRow(pickParty, pickAmt); }} placeholder="Amount (USD)" className="w-32 border border-slate-300 rounded-lg px-2 py-1.5 text-sm text-right tabular-nums" />
+              <input type="number" step="0.01" value={pickAmt} onChange={(e) => setPickAmt(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && pickParty) addRow(pickParty, pickAmt); }} placeholder={`Amount (${f.currency})`} className="w-32 border border-slate-300 rounded-lg px-2 py-1.5 text-sm text-right tabular-nums" />
               <button disabled={!pickParty} onClick={() => addRow(pickParty, pickAmt)} className="bg-slate-900 hover:bg-slate-700 disabled:opacity-40 text-white text-xs px-3 py-1.5 rounded-lg whitespace-nowrap">+ Add</button>
             </div>
           )}
         </div>}
         {rows.length > 0 && (
           <div className="px-3 py-2 border-t border-slate-200 flex flex-wrap justify-between gap-x-6 gap-y-1 text-xs bg-white">
-            <span className="text-slate-500">Allocated <b className="text-slate-800 tabular-nums ml-1">$ {fmt(allocTotal)}</b></span>
+            <span className="text-slate-500">Allocated <b className="text-slate-800 tabular-nums ml-1">{f.currency} {fmt(allocTotal)}</b></span>
             <span className="text-slate-500">Contract <b className="text-slate-800 tabular-nums ml-1">{f.currency} {fmt(contract)}</b></span>
             <span className={Math.abs(variance) < 0.005 ? "text-emerald-700" : "text-rose-600"}>
               {Math.abs(variance) < 0.005 ? "Fully allocated" : <>Unallocated <b className="tabular-nums ml-1">{fmt(variance)}</b></>}
@@ -2879,9 +2887,13 @@ function DisbursementForm({ initial, presetAgreement, agreements, disbursements,
 
 function CellDisbForm({ agreement, receipt, party, initial, currencies, allDisb, onClose, onSave, onDelete }) {
   const cur = (initial && initial.currency) || agreement.currency;
-  const rate = dayRate(cur, (initial && initial.date) || new Date().toISOString().slice(0, 10)) || defaultRate(cur, currencies);
+  // Allocation is held in the contract currency; this rate turns it into USD.
+  const rate = dayRate(cur, (initial && initial.date) || new Date().toISOString().slice(0, 10)) || defaultRate(cur, currencies) || 1;
+  const rOf = (x) => dayRate(x.currency, x.date) || defaultRate(x.currency, currencies) || 1;
   const existingPays = (initial && initial.payments) || [];
   const manyPays = existingPays.length > 1;
+  // Payments are recorded in USD (amount × rate). Show the single existing one in USD.
+  const existingPaidUSD = existingPays.length ? Number(existingPays[0].amount || 0) * Number(existingPays[0].rate || 1) : 0;
   const [f, setF] = useState({
     id: (initial && initial.id) || uid(),
     agreementId: agreement.id,
@@ -2894,34 +2906,40 @@ function CellDisbForm({ agreement, receipt, party, initial, currencies, allDisb,
     paymentStatus: (initial && initial.paymentStatus) || "Pending",
     comment: (initial && initial.comment) || "",
   });
-  const [paidOut, setPaidOut] = useState(manyPays ? "" : existingPays.length ? existingPays[0].amount : "");
+  const [paidOut, setPaidOut] = useState(manyPays ? "" : existingPays.length ? existingPaidUSD : "");
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
-  const amt = Number(f.amount) || 0;
-  const paid = f.paymentStatus === "Paid" && !manyPays && !String(paidOut).trim() ? amt : Number(paidOut) || 0;
+  const amt = Number(f.amount) || 0;               // allocation, in the contract currency
+  const allocUSD = amt * rate;                     // allocation converted to USD
+  // Disbursement is entered in USD. When marked Paid with no figure, default to the allocation's USD value.
+  const paidUSD = f.paymentStatus === "Paid" && !manyPays && !String(paidOut).trim() ? allocUSD : Number(paidOut) || 0;
   const others = (allDisb || []).filter((x) => x.agreementId === agreement.id && x.party === party && x.id !== f.id);
-  const otherPaid = others.reduce((s, x) => s + ((x.payments || []).length ? (x.payments || []).reduce((t, q) => t + Number(q.amount || 0), 0) : (x.paymentStatus === "Paid" ? Number(x.amount || 0) : 0)), 0);
-  const otherAlloc = others.reduce((s, x) => s + Number(x.amount || 0), 0);
-  // A disbursement (paid) may not exceed the party's allocation on this agreement.
-  const overBy = (otherPaid + paid) - (otherAlloc + amt);
+  const otherPaidUSD = others.reduce((s, x) => s + ((x.payments || []).length ? (x.payments || []).reduce((t, q) => t + Number(q.amount || 0) * Number(q.rate || 1), 0) : (x.paymentStatus === "Paid" ? Number(x.amount || 0) * rOf(x) : 0)), 0);
+  const otherAllocNat = others.reduce((s, x) => s + Number(x.amount || 0), 0);
+  const otherAllocUSD = others.reduce((s, x) => s + Number(x.amount || 0) * rOf(x), 0);
+  const totAllocNat = otherAllocNat + amt;
+  const totAllocUSD = otherAllocUSD + allocUSD;
+  const totPaidUSD = otherPaidUSD + paidUSD;
+  // A disbursement (paid, USD) may not exceed the party's allocation (contract currency → USD).
+  const overBy = totPaidUSD - totAllocUSD;
   const overAlloc = overBy > 0.005;
   const save = () => {
     if (overAlloc) return;
     let payments = existingPays;
     if (!manyPays) {
-      payments = paid > 0.005
-        ? [{ id: (existingPays[0] && existingPays[0].id) || uid(), date: (existingPays[0] && existingPays[0].date) || f.date, amount: paid, rate, notes: (existingPays[0] && existingPays[0].notes) || "Recorded from the agreement table" }]
+      payments = paidUSD > 0.005
+        ? [{ id: (existingPays[0] && existingPays[0].id) || uid(), date: (existingPays[0] && existingPays[0].date) || f.date, amount: paidUSD, rate: 1, currency: "USD", notes: (existingPays[0] && existingPays[0].notes) || "Recorded from the agreement table" }]
         : [];
     }
-    onSave({ ...f, amount: amt, payments });
+    onSave({ ...f, amount: amt, currency: cur, payments });
   };
   return (
     <Modal title={initial ? `Edit Disbursement — ${party}` : `Disburse to ${party}`} onClose={onClose}>
       <p className="-mt-1 mb-4 text-[11px] text-slate-500">{agreement.ref ? agreement.ref + " · " : ""}{agreement.title}{receipt ? <> · against the payment of <b>{csym(agreement.currency)} {fmt(receipt.amount)}</b> received {receipt.date}</> : null}</p>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4">
         <Field label={`Allocated — expected (${cur})`}><input type="number" className={inp} value={f.amount} onChange={set("amount")} placeholder="0.00" /></Field>
-        {!manyPays && <Field label={`Disbursed — actually paid (${cur})`}><input type="number" className={`${inp} border-rose-300 focus:border-rose-400 focus:ring-rose-100`} value={paidOut} onChange={(e) => setPaidOut(e.target.value)} placeholder={f.paymentStatus === "Paid" ? fmt(amt) : "0.00"} /></Field>}
+        {!manyPays && <Field label={`Disbursed — actually paid (USD)`}><input type="number" className={`${inp} border-rose-300 focus:border-rose-400 focus:ring-rose-100`} value={paidOut} onChange={(e) => setPaidOut(e.target.value)} placeholder={f.paymentStatus === "Paid" ? fmt(allocUSD) : "0.00"} /></Field>}
       </div>
-      <p className="-mt-1 mb-4 text-[11px] text-slate-400"><b className="text-slate-500">Allocated</b> is what {party} is owed on this payment; <b className="text-slate-500">Disbursed</b> is what has actually been paid out to them. The figure in the table is the <b>Disbursed</b> amount — edit it here.</p>
+      <p className="-mt-1 mb-4 text-[11px] text-slate-400"><b className="text-slate-500">Allocated</b> is what {party} is owed on this payment, in the contract currency ({cur}); <b className="text-slate-500">Disbursed</b> is what has actually been paid out to them, in USD. The figure in the table is the <b>Disbursed</b> amount — edit it here.</p>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4">
         <Field label="Status">
           <select className={inp} value={f.paymentStatus} onChange={set("paymentStatus")}>
@@ -2930,24 +2948,24 @@ function CellDisbForm({ agreement, receipt, party, initial, currencies, allDisb,
         </Field>
         <Field label="Date"><input type="date" className={inp} value={f.date} onChange={set("date")} /></Field>
       </div>
-      {manyPays && <p className="-mt-2 mb-4 text-[11px] text-slate-500">{existingPays.length} payments totalling {csym(cur)} {fmt(existingPays.reduce((s, q) => s + Number(q.amount || 0), 0))} are recorded against this disbursement. Edit them individually on the Disbursements tab.</p>}
-      {f.paymentStatus === "Paid" && !manyPays && !String(paidOut).trim() && <p className="-mt-2 mb-4 text-[11px] text-slate-400">Marked Paid with no figure entered, so the full {csym(cur)} {fmt(amt)} counts as disbursed.</p>}
+      {manyPays && <p className="-mt-2 mb-4 text-[11px] text-slate-500">{existingPays.length} payments totalling $ {fmt(existingPays.reduce((s, q) => s + Number(q.amount || 0) * Number(q.rate || 1), 0))} are recorded against this disbursement. Edit them individually on the Disbursements tab.</p>}
+      {f.paymentStatus === "Paid" && !manyPays && !String(paidOut).trim() && <p className="-mt-2 mb-4 text-[11px] text-slate-400">Marked Paid with no figure entered, so the allocation's USD value ($ {fmt(allocUSD)}) counts as disbursed.</p>}
 
       <div className="border border-slate-200 rounded-lg mb-4 text-xs">
         <div className="px-3 py-2 bg-slate-50 border-b border-slate-200 text-[10px] font-semibold text-slate-500 uppercase tracking-[0.14em]">Effect on {party}</div>
-        <div className="px-3 py-2 flex justify-between"><span className="text-slate-500">Allocated to {party}</span><span className="tabular-nums">{csym(cur)} {fmt(otherAlloc + amt)}</span></div>
-        <div className="px-3 py-2 flex justify-between border-t border-slate-100"><span className="text-slate-500">Disbursed to {party}</span><b className="tabular-nums">{csym(cur)} {fmt(otherPaid + paid)}</b></div>
-        <div className={`px-3 py-2 flex justify-between border-t border-slate-100 ${otherAlloc + amt - otherPaid - paid < -0.005 ? "text-rose-600" : "text-slate-500"}`}>
-          <span>{otherAlloc + amt - otherPaid - paid < -0.005 ? "Paid beyond allocation" : "Still to pay"}</span>
-          <b className="tabular-nums">{csym(cur)} {fmt(Math.abs(otherAlloc + amt - otherPaid - paid))}</b>
+        <div className="px-3 py-2 flex justify-between gap-2"><span className="text-slate-500">Allocated to {party}</span><span className="text-right"><span className="tabular-nums">{csym(cur)} {fmt(totAllocNat)}</span>{cur !== "USD" && <span className="block text-[10px] text-slate-400 tabular-nums">≈ $ {fmt(totAllocUSD)}</span>}</span></div>
+        <div className="px-3 py-2 flex justify-between border-t border-slate-100"><span className="text-slate-500">Disbursed to {party}</span><b className="tabular-nums">$ {fmt(totPaidUSD)}</b></div>
+        <div className={`px-3 py-2 flex justify-between border-t border-slate-100 ${totAllocUSD - totPaidUSD < -0.005 ? "text-rose-600" : "text-slate-500"}`}>
+          <span>{totAllocUSD - totPaidUSD < -0.005 ? "Paid beyond allocation" : "Still to pay"}</span>
+          <b className="tabular-nums">$ {fmt(Math.abs(totAllocUSD - totPaidUSD))}</b>
         </div>
       </div>
 
       <Field label="Comment"><input className={inp} value={f.comment} onChange={set("comment")} placeholder="Reference, remarks…" /></Field>
-      {overAlloc && <p className="mb-3 px-3 py-2 bg-rose-50 border border-rose-200 rounded-lg text-[11px] text-rose-700">Disbursed ({csym(cur)} {fmt(otherPaid + paid)}) exceeds {party}'s allocation ({csym(cur)} {fmt(otherAlloc + amt)}) by {csym(cur)} {fmt(overBy)}. Raise the <b>Allocated</b> amount above (or the agreement's allocation) before recording this much.</p>}
+      {overAlloc && <p className="mb-3 px-3 py-2 bg-rose-50 border border-rose-200 rounded-lg text-[11px] text-rose-700">Disbursed ($ {fmt(totPaidUSD)}) exceeds {party}'s allocation ({csym(cur)} {fmt(totAllocNat)}{cur !== "USD" ? ` ≈ $ ${fmt(totAllocUSD)}` : ""}) by $ {fmt(overBy)}. Raise the <b>Allocated</b> amount above (or the agreement's allocation) before recording this much.</p>}
       <div className="flex gap-2">
         {initial && onDelete && <button onClick={onDelete} className="px-4 py-2 rounded-lg text-sm font-medium border border-rose-200 text-rose-600 hover:bg-rose-50">Delete</button>}
-        <button disabled={(!amt && !paid) || overAlloc} onClick={save} className="flex-1 bg-rose-600 hover:bg-rose-500 disabled:opacity-40 text-white py-2 rounded-lg text-sm font-medium shadow-sm">{initial ? "Save Disbursement" : "Record Disbursement"}</button>
+        <button disabled={(!amt && !paidUSD) || overAlloc} onClick={save} className="flex-1 bg-rose-600 hover:bg-rose-500 disabled:opacity-40 text-white py-2 rounded-lg text-sm font-medium shadow-sm">{initial ? "Save Disbursement" : "Record Disbursement"}</button>
       </div>
     </Modal>
   );

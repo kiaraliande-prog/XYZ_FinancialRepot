@@ -1300,17 +1300,21 @@ function App() {
     if (rows.length) return rows.reduce((s, p) => s + Number(p.amount || 0), 0);
     return (dd.paymentStatus || "") === "Paid" ? Number(dd.amount || 0) : 0;
   };
+  // Rate that turns a disbursement's allocation (held in the contract currency)
+  // into USD, using the CBUAE/Xe rate for its date and falling back to presets.
+  const allocRate = dd => dayRate(dd.currency, dd.date) || defaultRate(dd.currency, data.currencies) || 1;
   const disbPaidUSD = dd => {
     const rows = dd.payments || [];
     if (rows.length) return rows.reduce((s, p) => s + Number(p.amount || 0) * Number(p.rate || 0), 0);
-    return (dd.paymentStatus || "") === "Paid" ? Number(dd.amount || 0) * Number(defaultRate(dd.currency, data.currencies) || 1) : 0;
+    return (dd.paymentStatus || "") === "Paid" ? Number(dd.amount || 0) * allocRate(dd) : 0;
   };
   const agComputed = data.agreements.map(a => {
     const received = (a.receipts || []).reduce((s, r) => s + Number(r.amount || 0), 0);
     const receivedUSD = (a.receipts || []).reduce((s, r) => s + Number(r.amount || 0) * Number(r.rate || 0), 0);
     const myDisb = data.disbursements.filter(dd => dd.agreementId === a.id);
     const disbursedUSD = myDisb.reduce((s, dd) => s + disbPaidUSD(dd), 0);
-    const allocatedUSD = myDisb.reduce((s, dd) => s + Number(dd.amount || 0), 0);
+    // Allocations are held in the contract currency; convert to USD for the rollups.
+    const allocatedUSD = myDisb.reduce((s, dd) => s + Number(dd.amount || 0) * allocRate(dd), 0);
     const invList = a.invoices || [];
     const hasInv = invList.length > 0;
     const invoiced = hasInv ? invList.reduce((s, i) => s + Number(i.amount || 0), 0) : received;
@@ -1338,12 +1342,16 @@ function App() {
     const paid = disbPaid(dd);
     const paidUSD = disbPaidUSD(dd);
     const amount = Number(dd.amount || 0);
+    // Allocation is in the contract currency; payments are in USD. Compare in USD.
+    const allocUSD = amount * allocRate(dd);
     return {
       ...dd,
       agreementTitle: ag ? (ag.ref ? ag.ref + " · " : "") + ag.title : "—",
       paid,
       paidUSD,
+      allocUSD,
       outstanding: amount - paid,
+      outstandingUSD: allocUSD - paidUSD,
       paymentStatus: dd.paymentStatus || "Ongoing"
     };
   });
@@ -1583,7 +1591,7 @@ function App() {
       date: p.date,
       kind: "in",
       desc: `Received — ${d.agreementTitle}${d.description ? ` · ${d.description}` : ""}`,
-      currency: d.currency,
+      currency: p.currency || d.currency,
       amount: Number(p.amount),
       usd: Number(p.amount) * Number(p.rate),
       comment: p.notes || ""
@@ -1655,16 +1663,18 @@ function App() {
       const amt = Number(amtRaw) || 0;
       const idx = disb.findIndex(d => d.agreementId === a.id && d.party === party);
       if (amt > 0) {
+        // Allocations are entered and stored in the agreement's (contract) currency.
         if (idx >= 0) disb[idx] = {
           ...disb[idx],
-          amount: amt
+          amount: amt,
+          currency: a.currency
         };else disb.push({
           id: uid(),
           agreementId: a.id,
           party,
           description: "Expected allocation",
           date: a.date,
-          currency: "USD",
+          currency: a.currency,
           amount: amt,
           paymentStatus: "Pending",
           feePercent: 0,
@@ -2088,7 +2098,7 @@ function App() {
       Date: p.date,
       Party: d.party,
       "Source Agreement": d.agreementTitle,
-      Currency: d.currency,
+      Currency: p.currency || d.currency,
       Amount: Number(p.amount),
       "Rate to USD": Number(p.rate),
       "USD Equivalent": p.amount * p.rate,
@@ -2160,7 +2170,7 @@ function App() {
   };
   if (LOGIN_ENABLED && !authChecked) return /*#__PURE__*/React.createElement("div", {
     className: "min-h-screen bg-slate-100 flex items-center justify-center text-slate-500"
-  }, "\u2026");
+  }, "…");
   if (LOGIN_ENABLED && !authed) return /*#__PURE__*/React.createElement(AuthScreen, {
     users: users,
     addUser: addUser,
@@ -2169,7 +2179,7 @@ function App() {
   });
   if (!loaded) return /*#__PURE__*/React.createElement("div", {
     className: "min-h-screen bg-slate-100 flex items-center justify-center text-slate-500"
-  }, "Loading your records\u2026");
+  }, "Loading your records…");
   const Sel = ({
     k,
     label,
@@ -2508,7 +2518,7 @@ function App() {
   }, fAg.length === 0 && /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("td", {
     colSpan: 10,
     className: "px-5 py-12 text-center text-slate-400"
-  }, "No agreements yet \u2014 start in the Agreements tab.")), fAg.map((a, i) => {
+  }, "No agreements yet — start in the Agreements tab.")), fAg.map((a, i) => {
     const valueUSD = Number(a.totalValue || 0) * (FX[a.currency] || 1);
     const pending = (a.hasInvoices ? a.invoicedUSD : valueUSD) - a.receivedUSD;
     return /*#__PURE__*/React.createElement(Fragment, {
@@ -2587,10 +2597,10 @@ function App() {
       className: "flex items-center justify-between mb-2"
     }, /*#__PURE__*/React.createElement("span", {
       className: "text-[10px] uppercase tracking-[0.14em] text-slate-400 font-semibold"
-    }, "Comments \u2014 ", a.title), /*#__PURE__*/React.createElement("button", {
+    }, "Comments — ", a.title), /*#__PURE__*/React.createElement("button", {
       onClick: () => setCommentRow(null),
       className: "text-slate-400 hover:text-slate-600 text-xs"
-    }, "Close \u2715")), getComments(a).length === 0 ? /*#__PURE__*/React.createElement("p", {
+    }, "Close ✕")), getComments(a).length === 0 ? /*#__PURE__*/React.createElement("p", {
       className: "text-xs text-slate-400 italic mb-2"
     }, "No comments yet.") : /*#__PURE__*/React.createElement("div", {
       className: "space-y-1.5 mb-2 max-h-52 overflow-y-auto pr-1"
@@ -2613,7 +2623,7 @@ function App() {
       onClick: () => removeComment(a.id, m.id),
       title: "Delete",
       className: "text-slate-300 hover:text-rose-500 text-xs shrink-0"
-    }, "\u2715")))), /*#__PURE__*/React.createElement("div", {
+    }, "✕")))), /*#__PURE__*/React.createElement("div", {
       className: "flex gap-2"
     }, /*#__PURE__*/React.createElement("input", {
       value: newComment,
@@ -2626,7 +2636,7 @@ function App() {
         if (e.key === "Escape") setCommentRow(null);
       },
       autoFocus: true,
-      placeholder: "Write a comment\u2026 (Enter to post)",
+      placeholder: "Write a comment… (Enter to post)",
       className: "flex-1 border border-slate-200 rounded-md px-3 py-1.5 text-xs text-slate-700 focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-100"
     }), /*#__PURE__*/React.createElement("button", {
       onClick: () => {
@@ -2706,7 +2716,7 @@ function App() {
     className: "text-slate-700 tabular-nums"
   }, "1.08232"))))), /*#__PURE__*/React.createElement("p", {
     className: "text-xs text-slate-500 italic mb-6 pb-6 border-b border-slate-100"
-  }, "Live figures from the register \u2014 reflects current filters."), /*#__PURE__*/React.createElement("div", {
+  }, "Live figures from the register — reflects current filters."), /*#__PURE__*/React.createElement("div", {
     className: "overflow-x-auto rounded-lg border border-slate-100"
   }, /*#__PURE__*/React.createElement("table", {
     className: "w-full text-sm min-w-[680px]"
@@ -2727,7 +2737,7 @@ function App() {
   }, allocationSummary.length === 0 && /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("td", {
     colSpan: 5,
     className: "px-4 py-8 text-center text-slate-400 italic"
-  }, "No allocations yet \u2014 load the register or add disbursements.")), allocationSummary.map((r, i) => /*#__PURE__*/React.createElement("tr", {
+  }, "No allocations yet — load the register or add disbursements.")), allocationSummary.map((r, i) => /*#__PURE__*/React.createElement("tr", {
     key: r.name,
     className: `border-t border-slate-100 hover:bg-slate-50/80 transition-colors ${i % 2 ? "bg-slate-50/30" : ""}`
   }, /*#__PURE__*/React.createElement("td", {
@@ -2742,7 +2752,7 @@ function App() {
       setTab("parties");
     },
     className: "text-blue-700 hover:text-blue-900 hover:underline text-xs tracking-wide"
-  }, "Open ", r.name, " statement \u2192")), /*#__PURE__*/React.createElement("td", {
+  }, "Open ", r.name, " statement →")), /*#__PURE__*/React.createElement("td", {
     className: "px-4 py-2 text-right"
   }, /*#__PURE__*/React.createElement(AmtG, {
     v: r.invoiced
@@ -3048,11 +3058,11 @@ function App() {
         className: "px-3 py-1.5 whitespace-nowrap text-slate-600"
       }, cont ? "" : iv ? iv.date : /*#__PURE__*/React.createElement("span", {
         className: "text-slate-300"
-      }, "\u2014")), /*#__PURE__*/React.createElement("td", {
+      }, "—")), /*#__PURE__*/React.createElement("td", {
         className: "px-3 py-1.5 whitespace-nowrap"
       }, cont ? /*#__PURE__*/React.createElement("span", {
         className: "text-slate-300 text-xs"
-      }, "\u21B3 ", iv.number || "same invoice") : iv ? isLocked(a) ? /*#__PURE__*/React.createElement("span", {
+      }, "↳ ", iv.number || "same invoice") : iv ? isLocked(a) ? /*#__PURE__*/React.createElement("span", {
         className: "font-medium text-slate-700"
       }, iv.number || "—") : /*#__PURE__*/React.createElement("button", {
         onClick: () => setModal({
@@ -3066,11 +3076,11 @@ function App() {
         className: "font-medium text-slate-700 hover:text-blue-700 hover:underline"
       }, iv.number || "—") : /*#__PURE__*/React.createElement("span", {
         className: "text-slate-300"
-      }, "\u2014")), /*#__PURE__*/React.createElement("td", {
+      }, "—")), /*#__PURE__*/React.createElement("td", {
         className: "px-3 py-1.5 text-right whitespace-nowrap border-r border-slate-100"
       }, cont || !iv ? /*#__PURE__*/React.createElement("span", {
         className: "text-slate-300"
-      }, "\u2014") : `${csym(a.currency)} ${fmt(iv.amount)}`), /*#__PURE__*/React.createElement("td", {
+      }, "—") : `${csym(a.currency)} ${fmt(iv.amount)}`), /*#__PURE__*/React.createElement("td", {
         className: "px-3 py-1.5 whitespace-nowrap"
       }, !r ? /*#__PURE__*/React.createElement("span", {
         className: `text-[10px] uppercase tracking-wider ${overdue ? "text-rose-600 font-medium" : "text-slate-400"}`
@@ -3126,7 +3136,7 @@ function App() {
           className: `px-2 py-1.5 text-right text-xs tabular-nums ${i === P - 1 ? "border-r border-slate-100 " : ""}${disbCellStyle(cell)}`
         }, !r ? /*#__PURE__*/React.createElement("span", {
           className: "text-slate-200"
-        }, "\u2014") : isLocked(a) ? /*#__PURE__*/React.createElement("span", {
+        }, "—") : isLocked(a) ? /*#__PURE__*/React.createElement("span", {
           className: "inline-flex items-baseline justify-end gap-0.5 w-full"
         }, /*#__PURE__*/React.createElement("span", null, fmt(cell ? cell.paid : 0)), /*#__PURE__*/React.createElement("span", {
           className: "opacity-50"
@@ -3154,7 +3164,7 @@ function App() {
         d: "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"
       }))) : /*#__PURE__*/React.createElement("span", {
         className: "text-slate-200 text-xs"
-      }, "\u2014") : isLocked(a) ? r.comment ? /*#__PURE__*/React.createElement("span", {
+      }, "—") : isLocked(a) ? r.comment ? /*#__PURE__*/React.createElement("span", {
         title: r.comment,
         className: "inline-flex items-center justify-center w-6 h-6 rounded-md border text-slate-400 border-slate-200"
       }, /*#__PURE__*/React.createElement("svg", {
@@ -3170,7 +3180,7 @@ function App() {
         d: "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"
       }))) : /*#__PURE__*/React.createElement("span", {
         className: "text-slate-200 text-xs"
-      }, "\u2014") : rcptCommentEdit === r.id ? /*#__PURE__*/React.createElement("input", {
+      }, "—") : rcptCommentEdit === r.id ? /*#__PURE__*/React.createElement("input", {
         autoFocus: true,
         defaultValue: r.comment || "",
         onBlur: e => {
@@ -3183,7 +3193,7 @@ function App() {
           if (e.key === "Enter") e.target.blur();
           if (e.key === "Escape") setRcptCommentEdit(null);
         },
-        placeholder: "Comment\u2026",
+        placeholder: "Comment…",
         className: "w-32 border border-slate-200 rounded px-2 py-1 text-xs focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-100"
       }) : /*#__PURE__*/React.createElement("button", {
         onClick: () => setRcptCommentEdit(r.id),
@@ -3210,7 +3220,7 @@ function App() {
       className: "px-3 py-2 whitespace-nowrap"
     }, "Total", Math.abs(outstanding) > 0.005 ? /*#__PURE__*/React.createElement("span", {
       className: `ml-2 text-[10px] normal-case tracking-normal ${outstanding > 0.005 ? "text-rose-600" : "text-slate-400"}`
-    }, "\xB7 Outstanding ", fmt(outstanding)) : null), /*#__PURE__*/React.createElement("td", {
+    }, "· Outstanding ", fmt(outstanding)) : null), /*#__PURE__*/React.createElement("td", {
       className: "px-3 py-2 text-right whitespace-nowrap border-r border-slate-200"
     }, csym(a.currency), " ", fmt(a.invoiced)), /*#__PURE__*/React.createElement("td", {
       className: "px-3 py-2 text-[10px] text-slate-400 normal-case tracking-normal"
@@ -3223,7 +3233,7 @@ function App() {
       className: `px-2 py-2 text-right tabular-nums ${i === P - 1 ? "border-r border-slate-200" : ""}`
     }, fmt(allocTotal(p)))), /*#__PURE__*/React.createElement("td", null)))), P > 0 && /*#__PURE__*/React.createElement("p", {
       className: "mt-1.5 text-[10px] text-slate-400"
-    }, "The figure under each party name is the amount allocated to them. Amounts in the Allocations columns are what has actually been disbursed against that payment \u2014 grey while pending, light green when part-paid, green when settled. Click a figure to record or edit it; the party totals and the tiles above follow automatically."));
+    }, "The figure under each party name is the amount allocated to them. Amounts in the Allocations columns are what has actually been disbursed against that payment — grey while pending, light green when part-paid, green when settled. Click a figure to record or edit it; the party totals and the tiles above follow automatically."));
   })()), /*#__PURE__*/React.createElement("div", {
     className: "mt-3 flex flex-wrap gap-2 items-center"
   }, isLocked(a) ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
@@ -3246,10 +3256,10 @@ function App() {
     rx: "2"
   }), /*#__PURE__*/React.createElement("path", {
     d: "M7 11V7a5 5 0 0 1 10 0v4"
-  })), a.status === "Closed" && a.archived ? "Closed and archived" : a.archived ? "Archived" : "Closed", " \u2014 invoices, payments and parties are read-only."), /*#__PURE__*/React.createElement("button", {
+  })), a.status === "Closed" && a.archived ? "Closed and archived" : a.archived ? "Archived" : "Closed", " — invoices, payments and parties are read-only."), /*#__PURE__*/React.createElement("button", {
     onClick: () => ask(`Reopen "${a.title}"? Status returns to Ongoing${a.archived ? " and it is unarchived" : ""}, and records become editable again.`, () => reopenAgreement(a.id)),
     className: "bg-emerald-600 hover:bg-emerald-500 text-white text-xs px-3 py-1.5 rounded-lg shadow-sm"
-  }, "\u21BA Reopen Agreement")) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("button", {
+  }, "↺ Reopen Agreement")) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("button", {
     onClick: () => setModal({
       type: "invoice",
       payload: {
@@ -3516,7 +3526,7 @@ function App() {
     }
   }), modal?.type === "disbPayment" && /*#__PURE__*/React.createElement(MoneyForm, {
     title: modal.payload.payment ? `Edit Payment to ${modal.payload.disb.party}` : `Payment to ${modal.payload.disb.party}`,
-    currency: modal.payload.disb.currency,
+    currency: "USD",
     currencies: data.currencies,
     initial: modal.payload.payment,
     verb: "Payment",
@@ -3526,30 +3536,31 @@ function App() {
       id
     }) => {
       const dd = data.disbursements.find(x => x.id === modal.payload.disb.id) || modal.payload.disb;
-      const cur = dd.currency;
+      // Payments are made in USD; the allocation is held in the contract currency.
       const others = (dd.payments || []).filter(q => q.id !== id);
-      const before = others.reduce((s, q) => s + Number(q.amount || 0), 0);
+      const before = others.reduce((s, q) => s + Number(q.amount || 0) * Number(q.rate || 1), 0);
       const after = before + amount;
-      const due = Number(dd.amount || 0);
-      const left = due - after;
+      const dueUSD = Number(dd.amount || 0) * allocRate(dd);
+      const left = dueUSD - after;
+      const allocLabel = `${csym(dd.currency)} ${fmt(Number(dd.amount || 0))}${dd.currency !== "USD" ? ` ≈ $ ${fmt(dueUSD)}` : ""}`;
       return [{
         label: "Paid before",
-        value: `${csym(cur)} ${fmt(before)}`
+        value: `$ ${fmt(before)}`
       }, {
         label: "Paid after",
-        value: `${csym(cur)} ${fmt(after)}`,
+        value: `$ ${fmt(after)}`,
         bold: true
       }, {
         label: `Allocated to ${dd.party}`,
-        value: `${csym(cur)} ${fmt(due)}`
+        value: allocLabel
       }, left < -0.005 ? {
         label: "Overpaid by",
-        value: `${csym(cur)} ${fmt(Math.abs(left))}`,
+        value: `$ ${fmt(Math.abs(left))}`,
         bold: true,
         danger: true
       } : {
         label: "Still to pay",
-        value: `${csym(cur)} ${fmt(left)}`,
+        value: `$ ${fmt(left)}`,
         bold: true
       }];
     },
@@ -3558,16 +3569,16 @@ function App() {
       id
     }) => {
       const dd = data.disbursements.find(x => x.id === modal.payload.disb.id) || modal.payload.disb;
-      const due = Number(dd.amount || 0);
-      const before = (dd.payments || []).filter(q => q.id !== id).reduce((s, q) => s + Number(q.amount || 0), 0);
-      if (before + amount > due + 0.005) return `This would pay ${csym(dd.currency)} ${fmt(before + amount)} to ${dd.party}, exceeding the allocation of ${csym(dd.currency)} ${fmt(due)}. Increase the allocation for ${dd.party} first (edit the agreement's parties or the Allocated amount), then record this payment.`;
+      const dueUSD = Number(dd.amount || 0) * allocRate(dd);
+      const before = (dd.payments || []).filter(q => q.id !== id).reduce((s, q) => s + Number(q.amount || 0) * Number(q.rate || 1), 0);
+      if (before + amount > dueUSD + 0.005) return `This would pay $ ${fmt(before + amount)} to ${dd.party}, exceeding the allocation of ${csym(dd.currency)} ${fmt(Number(dd.amount || 0))}${dd.currency !== "USD" ? ` (≈ $ ${fmt(dueUSD)})` : ""}. Increase the allocation for ${dd.party} first (edit the agreement's parties or the Allocated amount), then record this payment.`;
       return null;
     },
     onDelete: () => {
       const pay = modal.payload.payment;
       const dId = modal.payload.disb.id;
       setModal(null);
-      ask(`Delete this payment of ${csym(modal.payload.disb.currency)} ${fmt(pay.amount)} to ${modal.payload.disb.party}?`, () => {
+      ask(`Delete this payment of ${csym(pay.currency || modal.payload.disb.currency)} ${fmt(pay.amount)} to ${modal.payload.disb.party}?`, () => {
         const dd = data.disbursements.find(x => x.id === dId);
         if (dd) upsert("disbursements", {
           ...dd,
@@ -3582,7 +3593,11 @@ function App() {
         return;
       }
       const dd = data.disbursements.find(x => x.id === modal.payload.disb.id);
-      const payments = (dd.payments || []).some(q => q.id === p.id) ? dd.payments.map(q => q.id === p.id ? p : q) : [...(dd.payments || []), p];
+      const stamped = modal.payload.payment ? p : {
+        ...p,
+        currency: "USD"
+      };
+      const payments = (dd.payments || []).some(q => q.id === stamped.id) ? dd.payments.map(q => q.id === stamped.id ? stamped : q) : [...(dd.payments || []), stamped];
       upsert("disbursements", {
         ...dd,
         payments
@@ -3681,7 +3696,7 @@ function App() {
   }, notice), /*#__PURE__*/React.createElement("button", {
     onClick: () => setNotice(""),
     className: "text-slate-400 hover:text-white shrink-0"
-  }, "\u2715")), confirmState && /*#__PURE__*/React.createElement(Modal, {
+  }, "✕")), confirmState && /*#__PURE__*/React.createElement(Modal, {
     title: "Please confirm",
     onClose: () => setConfirmState(null)
   }, /*#__PURE__*/React.createElement("p", {
@@ -3879,17 +3894,17 @@ function DisbTab({
         className: "inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-600 tabular-nums"
       }, /*#__PURE__*/React.createElement("span", {
         className: "uppercase tracking-wide opacity-70"
-      }, "Paid"), fmt(d.paid)), /*#__PURE__*/React.createElement("span", {
-        className: `inline-flex items-center gap-1 px-1.5 py-0.5 rounded tabular-nums ${d.outstanding > 0.005 ? "bg-rose-50 text-rose-600" : "bg-slate-100 text-slate-400"}`
+      }, "Paid"), "$ ", fmt(d.paidUSD)), /*#__PURE__*/React.createElement("span", {
+        className: `inline-flex items-center gap-1 px-1.5 py-0.5 rounded tabular-nums ${d.outstandingUSD > 0.005 ? "bg-rose-50 text-rose-600" : "bg-slate-100 text-slate-400"}`
       }, /*#__PURE__*/React.createElement("span", {
         className: "uppercase tracking-wide opacity-70"
-      }, "Due"), fmt(d.outstanding)))), /*#__PURE__*/React.createElement("span", {
+      }, "Due"), "$ ", fmt(d.outstandingUSD)))), /*#__PURE__*/React.createElement("span", {
         className: `w-6 h-6 flex items-center justify-center rounded-full text-[10px] text-slate-400 hover:bg-slate-100 transition-transform ${expanded === d.id ? "rotate-180" : ""}`
-      }, "\u25BC"))), expanded === d.id && /*#__PURE__*/React.createElement("div", {
+      }, "▼"))), expanded === d.id && /*#__PURE__*/React.createElement("div", {
         className: "px-4 pb-3 bg-slate-50/70"
       }, d.comment && /*#__PURE__*/React.createElement("div", {
         className: "text-xs text-slate-500 mb-2"
-      }, "\uD83D\uDCAC ", d.comment), /*#__PURE__*/React.createElement("div", {
+      }, "💬 ", d.comment), /*#__PURE__*/React.createElement("div", {
         className: "overflow-x-auto"
       }, /*#__PURE__*/React.createElement("table", {
         className: "w-full text-sm bg-white rounded-lg border border-slate-200 min-w-[680px] overflow-hidden"
@@ -3901,9 +3916,9 @@ function DisbTab({
         className: "text-left px-3 py-1.5"
       }, "Invoice #"), /*#__PURE__*/React.createElement("th", {
         className: "text-right px-3 py-1.5"
-      }, "Amount (", d.currency, ")"), /*#__PURE__*/React.createElement("th", {
+      }, "Amount paid"), /*#__PURE__*/React.createElement("th", {
         className: "text-right px-3 py-1.5"
-      }, "Rate \u2192 USD"), /*#__PURE__*/React.createElement("th", {
+      }, "Rate → USD"), /*#__PURE__*/React.createElement("th", {
         className: "text-right px-3 py-1.5"
       }, "USD Equivalent"), /*#__PURE__*/React.createElement("th", {
         className: "text-left px-3 py-1.5"
@@ -3927,7 +3942,7 @@ function DisbTab({
         className: `w-24 rounded px-1 py-0.5 text-xs border ${agLock ? "border-transparent bg-transparent text-slate-500 cursor-not-allowed" : "border-transparent hover:border-slate-200 focus:border-slate-300"}`
       })), /*#__PURE__*/React.createElement("td", {
         className: "px-3 py-1.5 text-right"
-      }, csym(d.currency), " ", fmt(p.amount)), /*#__PURE__*/React.createElement("td", {
+      }, csym(p.currency || d.currency), " ", fmt(p.amount)), /*#__PURE__*/React.createElement("td", {
         className: "px-3 py-1.5 text-right"
       }, Number(p.rate).toFixed(4)), /*#__PURE__*/React.createElement("td", {
         className: "px-3 py-1.5 text-right font-medium"
@@ -3945,7 +3960,7 @@ function DisbTab({
         className: "px-3 py-1.5 text-right whitespace-nowrap"
       }, agLock ? /*#__PURE__*/React.createElement("span", {
         className: "text-slate-200 text-xs"
-      }, "\u2014") : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("button", {
+      }, "—") : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("button", {
         onClick: () => setModal({
           type: "disbPayment",
           payload: {
@@ -3964,7 +3979,7 @@ function DisbTab({
         className: "mt-3 flex flex-wrap gap-2 items-center"
       }, agLock ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
         className: "text-xs text-slate-500 bg-white border border-slate-200 rounded-lg px-3 py-1.5"
-      }, "Contract is closed or archived \u2014 reopen it under Agreements & Receipts to edit this allocation."), /*#__PURE__*/React.createElement("button", {
+      }, "Contract is closed or archived — reopen it under Agreements & Receipts to edit this allocation."), /*#__PURE__*/React.createElement("button", {
         onClick: () => setModal({
           type: "transfer",
           payload: {
@@ -4042,7 +4057,7 @@ function PartiesTab({
       date: p.date,
       kind: "in",
       desc: `Received — ${d.agreementTitle}${d.description ? ` · ${d.description}` : ""}`,
-      currency: d.currency,
+      currency: p.currency || d.currency,
       amount: Number(p.amount),
       usd: Number(p.amount) * Number(p.rate),
       comment: p.notes || ""
@@ -4113,7 +4128,7 @@ function PartiesTab({
     }, /*#__PURE__*/React.createElement("button", {
       onClick: () => setSelectedParty(null),
       className: "text-sm text-blue-700 hover:text-blue-900"
-    }, "\u2190 All Parties"), /*#__PURE__*/React.createElement("h2", {
+    }, "← All Parties"), /*#__PURE__*/React.createElement("h2", {
       className: "font-serif text-xl text-slate-900"
     }, selectedParty, selectedParty === "O. Dev" && /*#__PURE__*/React.createElement("span", {
       className: "block text-xs italic text-slate-400 font-normal"
@@ -4227,7 +4242,7 @@ function PartiesTab({
       className: "px-4 py-2 text-right whitespace-nowrap"
     }, r.locked ? /*#__PURE__*/React.createElement("span", {
       className: "inline-flex items-center gap-1 text-[10px] uppercase tracking-wide text-slate-400",
-      title: "Contract closed or archived \u2014 reopen it to edit"
+      title: "Contract closed or archived — reopen it to edit"
     }, /*#__PURE__*/React.createElement("svg", {
       width: "9",
       height: "9",
@@ -4268,9 +4283,9 @@ function PartiesTab({
     }, /*#__PURE__*/React.createElement("td", {
       className: "px-4 py-1.5 pl-8",
       colSpan: 2
-    }, "\u21B3 ", p.notes || "Transaction", " ", /*#__PURE__*/React.createElement("span", {
+    }, "↳ ", p.notes || "Transaction", " ", /*#__PURE__*/React.createElement("span", {
       className: "text-slate-400"
-    }, "\xB7 ", p.date)), /*#__PURE__*/React.createElement("td", {
+    }, "· ", p.date)), /*#__PURE__*/React.createElement("td", {
       colSpan: 3
     }), /*#__PURE__*/React.createElement("td", {
       className: "px-4 py-1.5 text-right tabular-nums"
@@ -4280,7 +4295,7 @@ function PartiesTab({
       className: "px-4 py-1.5 text-right"
     }, r.locked ? /*#__PURE__*/React.createElement("span", {
       className: "text-slate-200"
-    }, "\u2014") : /*#__PURE__*/React.createElement("button", {
+    }, "—") : /*#__PURE__*/React.createElement("button", {
       onClick: () => setModal({
         type: "disbPayment",
         payload: {
@@ -4450,7 +4465,7 @@ function PartiesTab({
     className: "px-5 py-2.5 text-right"
   }, p.trCount), /*#__PURE__*/React.createElement("td", {
     className: "px-5 py-2.5 text-right text-xs text-slate-400"
-  }, "View statement \u2192")))))));
+  }, "View statement →")))))));
 }
 function TransfersTab({
   fTr,
@@ -4464,7 +4479,7 @@ function TransfersTab({
     className: "font-serif text-2xl text-slate-900 tracking-tight"
   }, "Onward Transfers"), /*#__PURE__*/React.createElement("p", {
     className: "text-[10px] uppercase tracking-[0.18em] text-slate-400 mt-1"
-  }, "Party \u2192 Account \xB7 ", fTr.length, " transfers")), /*#__PURE__*/React.createElement("button", {
+  }, "Party → Account · ", fTr.length, " transfers")), /*#__PURE__*/React.createElement("button", {
     onClick: () => setModal({
       type: "transfer",
       payload: {}
@@ -4629,7 +4644,7 @@ function AuthScreen({
     className: "p-6"
   }, mode === "firstSetup" && /*#__PURE__*/React.createElement("p", {
     className: "text-xs text-slate-500 mb-4"
-  }, "Set up the Super Admin account \u2014 yours, and the only one. All further user IDs (and their passwords) are created by you in Settings; there is no self-registration."), mode === "reset" && /*#__PURE__*/React.createElement("p", {
+  }, "Set up the Super Admin account — yours, and the only one. All further user IDs (and their passwords) are created by you in Settings; there is no self-registration."), mode === "reset" && /*#__PURE__*/React.createElement("p", {
     className: "text-xs text-slate-500 mb-4"
   }, "Enter your user ID, then answer your security question to set a new password. If no security question was set, ask the Super Admin to set a new password for you."), /*#__PURE__*/React.createElement("label", {
     className: "block mb-3"
@@ -4735,14 +4750,14 @@ function AuthScreen({
   }, /*#__PURE__*/React.createElement("button", {
     onClick: () => goto("signin"),
     className: "text-slate-500 hover:underline"
-  }, "\u2190 Back to sign in")), hasUsers && mode === "signin" && /*#__PURE__*/React.createElement("div", {
+  }, "← Back to sign in")), hasUsers && mode === "signin" && /*#__PURE__*/React.createElement("div", {
     className: "mt-4 text-xs text-center"
   }, /*#__PURE__*/React.createElement("button", {
     onClick: () => goto("reset"),
     className: "text-blue-700 hover:underline"
   }, "Forgot password?")), /*#__PURE__*/React.createElement("p", {
     className: "text-[10px] text-slate-400 mt-4 text-center"
-  }, "Local lock screen \xB7 passwords & answers hashed (SHA-256)"))));
+  }, "Local lock screen · passwords & answers hashed (SHA-256)"))));
 }
 function ReleasePanel({
   release,
@@ -4816,9 +4831,9 @@ function ReleasePanel({
     className: "mb-3 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg text-[11px] text-amber-800"
   }, "Release ", /*#__PURE__*/React.createElement("b", null, release.version), " recorded the domain only (", /*#__PURE__*/React.createElement("span", {
     className: "break-all"
-  }, release.host), "), which the preview and the published page share \u2014 so it cannot tell them apart. Publish again from the published page to record the full address."), /*#__PURE__*/React.createElement("p", {
+  }, release.host), "), which the preview and the published page share — so it cannot tell them apart. Publish again from the published page to record the full address."), /*#__PURE__*/React.createElement("p", {
     className: "text-xs text-slate-500 mb-3"
-  }, "Publishing the ", /*#__PURE__*/React.createElement("b", null, "code"), " is done with the Publish button in the Claude artifact toolbar. This records the release and decides where records may be edited \u2014 structural changes never touch your stored data."), unrecorded && /*#__PURE__*/React.createElement("p", {
+  }, "Publishing the ", /*#__PURE__*/React.createElement("b", null, "code"), " is done with the Publish button in the Claude artifact toolbar. This records the release and decides where records may be edited — structural changes never touch your stored data."), unrecorded && /*#__PURE__*/React.createElement("p", {
     className: "mb-3 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg text-[11px] text-amber-800"
   }, "This build is ", /*#__PURE__*/React.createElement("b", null, APP_VERSION), release ? /*#__PURE__*/React.createElement(React.Fragment, null, " but the recorded release is ", /*#__PURE__*/React.createElement("b", null, release.version)) : /*#__PURE__*/React.createElement(React.Fragment, null, " and nothing has been recorded yet"), ". Publish the code from the artifact toolbar first, then press the button below to record it."), /*#__PURE__*/React.createElement("div", {
     className: "flex flex-wrap gap-2 items-end mb-3"
@@ -5002,7 +5017,7 @@ function UserPanel({
   }, "Save"), /*#__PURE__*/React.createElement("button", {
     onClick: () => setEditing(null),
     className: "text-slate-400 text-xs"
-  }, "\u2715")) : /*#__PURE__*/React.createElement("span", {
+  }, "✕")) : /*#__PURE__*/React.createElement("span", {
     className: "flex items-center gap-2"
   }, /*#__PURE__*/React.createElement("span", {
     className: u.name ? "font-medium text-slate-800" : "text-slate-300 italic"
@@ -5065,7 +5080,7 @@ function UserPanel({
     className: "text-rose-600 text-xs"
   }, "Remove")) : !canRename(u) && /*#__PURE__*/React.createElement("span", {
     className: "text-xs text-slate-300"
-  }, "\u2014"))))))), isSuperAdmin && pwFor && (() => {
+  }, "—"))))))), isSuperAdmin && pwFor && (() => {
     const u = users.find(x => x.userId === pwFor);
     if (!u) return null;
     return /*#__PURE__*/React.createElement("div", {
@@ -5074,16 +5089,16 @@ function UserPanel({
       className: "flex items-baseline justify-between gap-2 mb-1"
     }, /*#__PURE__*/React.createElement("h3", {
       className: "text-sm font-semibold"
-    }, "Set password \u2014 ", u.name || u.userId), /*#__PURE__*/React.createElement("button", {
+    }, "Set password — ", u.name || u.userId), /*#__PURE__*/React.createElement("button", {
       onClick: () => {
         setPwFor(null);
         setPwValue("");
         setPwErr("");
       },
       className: "text-slate-400 hover:text-slate-600 text-xs"
-    }, "Close \u2715")), /*#__PURE__*/React.createElement("p", {
+    }, "Close ✕")), /*#__PURE__*/React.createElement("p", {
       className: "text-xs text-slate-500 mb-3"
-    }, "Set or replace this user's password. They sign in with their user ID and the password you set here \u2014 there is no self-registration."), /*#__PURE__*/React.createElement("div", {
+    }, "Set or replace this user's password. They sign in with their user ID and the password you set here — there is no self-registration."), /*#__PURE__*/React.createElement("div", {
       className: "flex flex-wrap gap-2 items-end"
     }, /*#__PURE__*/React.createElement("label", {
       className: "block flex-1 min-w-[200px]"
@@ -5117,7 +5132,7 @@ function UserPanel({
     className: "text-sm font-semibold mb-1"
   }, "Create User ID"), /*#__PURE__*/React.createElement("p", {
     className: "text-xs text-slate-500 mb-3"
-  }, "New accounts are always ", /*#__PURE__*/React.createElement("b", null, "Admin"), ". You set the user ID and its ", /*#__PURE__*/React.createElement("b", null, "password"), " here \u2014 the user signs in with them directly; there is no self-registration. The user ID (email) is permanent; the display name can be changed later. A security question is optional and only enables self-service password reset."), /*#__PURE__*/React.createElement("div", {
+  }, "New accounts are always ", /*#__PURE__*/React.createElement("b", null, "Admin"), ". You set the user ID and its ", /*#__PURE__*/React.createElement("b", null, "password"), " here — the user signs in with them directly; there is no self-registration. The user ID (email) is permanent; the display name can be changed later. A security question is optional and only enables self-service password reset."), /*#__PURE__*/React.createElement("div", {
     className: "flex flex-wrap gap-2 items-end mb-3"
   }, /*#__PURE__*/React.createElement("label", {
     className: "block flex-1 min-w-[140px]"
@@ -5247,7 +5262,7 @@ function Modal({
   }, title), /*#__PURE__*/React.createElement("button", {
     onClick: onClose,
     className: "text-slate-400 hover:text-slate-700 transition-colors"
-  }, "\u2715")), /*#__PURE__*/React.createElement("div", {
+  }, "✕")), /*#__PURE__*/React.createElement("div", {
     className: "p-4 sm:p-6"
   }, children)));
 }
@@ -5319,7 +5334,7 @@ function ReportModal({
     className: chip(pick.includes(p))
   }, p))), /*#__PURE__*/React.createElement("p", {
     className: "text-xs text-slate-400 mt-1"
-  }, pick.length, " selected \xB7 the report (agreements, accounts and statements) covers only the selected parties. Select none for an all-parties report.")) : /*#__PURE__*/React.createElement(Field, {
+  }, pick.length, " selected · the report (agreements, accounts and statements) covers only the selected parties. Select none for an all-parties report.")) : /*#__PURE__*/React.createElement(Field, {
     label: "Include agreements"
   }, /*#__PURE__*/React.createElement("div", {
     className: "flex flex-wrap gap-2 mb-2"
@@ -5339,12 +5354,12 @@ function ReportModal({
     className: chip(agPick.includes(a.id))
   }, (a.ref ? a.ref + " · " : "") + a.title))), /*#__PURE__*/React.createElement("p", {
     className: "text-xs text-slate-400 mt-1"
-  }, agPick.length, " selected \xB7 the report covers only the selected agreements \u2014 their allocations, payments received, associated accounts, and the statements of the parties allocated on them. Select none for an all-agreements report.")), /*#__PURE__*/React.createElement("div", {
+  }, agPick.length, " selected · the report covers only the selected agreements — their allocations, payments received, associated accounts, and the statements of the parties allocated on them. Select none for an all-agreements report.")), /*#__PURE__*/React.createElement("div", {
     className: "flex gap-2"
   }, /*#__PURE__*/React.createElement("button", {
     onClick: () => onPreview(parties, agIds),
     className: "flex-1 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 py-2 rounded-lg text-sm font-medium"
-  }, "\uD83D\uDC41 Preview"), /*#__PURE__*/React.createElement("button", {
+  }, "👁 Preview"), /*#__PURE__*/React.createElement("button", {
     onClick: () => onGenerate(which, parties, agIds),
     className: "flex-1 bg-emerald-600 hover:bg-emerald-500 text-white py-2 rounded-lg text-sm font-medium shadow-sm"
   }, "Generate")));
@@ -5389,7 +5404,7 @@ function NoteModal({
       if ((e.metaKey || e.ctrlKey) && e.key === "Enter") submit();
     },
     rows: 4,
-    placeholder: "Type your note\u2026",
+    placeholder: "Type your note…",
     className: inp
   })), /*#__PURE__*/React.createElement("div", {
     className: "grid grid-cols-1 sm:grid-cols-2 gap-3"
@@ -5473,7 +5488,7 @@ function NotesPanel({
   }, /*#__PURE__*/React.createElement("input", {
     value: q,
     onChange: e => setQ(e.target.value),
-    placeholder: "Search notes\u2026",
+    placeholder: "Search notes…",
     className: "border border-slate-200 rounded-lg px-3 py-2 text-sm w-44 sm:w-56 focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-100"
   }), /*#__PURE__*/React.createElement("button", {
     onClick: onAdd,
@@ -5516,13 +5531,13 @@ function NotesPanel({
     className: "inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium ring-1 ring-inset bg-blue-50 text-blue-700 ring-blue-600/20"
   }, userName(n.assignedTo)) : /*#__PURE__*/React.createElement("span", {
     className: "text-slate-300"
-  }, "\u2014")), /*#__PURE__*/React.createElement("td", {
+  }, "—")), /*#__PURE__*/React.createElement("td", {
     className: "px-4 py-3"
   }, n.agreementId ? /*#__PURE__*/React.createElement("span", {
     className: "text-slate-700"
   }, agTitle(n.agreementId)) : /*#__PURE__*/React.createElement("span", {
     className: "text-slate-300"
-  }, "\u2014")), /*#__PURE__*/React.createElement("td", {
+  }, "—")), /*#__PURE__*/React.createElement("td", {
     className: "px-2 py-3 text-right whitespace-nowrap"
   }, /*#__PURE__*/React.createElement("button", {
     onClick: () => onEdit(n),
@@ -5569,7 +5584,7 @@ function PartySelect({
       setNewName("");
     },
     className: "text-slate-500 text-xs px-1"
-  }, "\u2715"));
+  }, "✕"));
   return /*#__PURE__*/React.createElement("select", {
     className: inp,
     value: value || "",
@@ -5578,14 +5593,14 @@ function PartySelect({
     }
   }, /*#__PURE__*/React.createElement("option", {
     value: ""
-  }, "\u2014 Select party \u2014"), hasValue && /*#__PURE__*/React.createElement("option", {
+  }, "— Select party —"), hasValue && /*#__PURE__*/React.createElement("option", {
     value: value
   }, value), opts.map(p => /*#__PURE__*/React.createElement("option", {
     key: p.id,
     value: p.name
   }, p.name)), /*#__PURE__*/React.createElement("option", {
     value: "__add__"
-  }, "\uFF0B Add new party\u2026"));
+  }, "＋ Add new party…"));
 }
 function AgreementForm({
   initial,
@@ -5758,7 +5773,7 @@ function AgreementForm({
     className: "text-[10px] font-semibold text-slate-500 uppercase tracking-[0.14em]"
   }, "Invoices"), /*#__PURE__*/React.createElement("span", {
     className: "text-[10px] text-slate-400"
-  }, "at least one required \xB7 agreement value = total invoiced")), /*#__PURE__*/React.createElement("div", {
+  }, "at least one required · agreement value = total invoiced")), /*#__PURE__*/React.createElement("div", {
     className: "overflow-x-auto"
   }, /*#__PURE__*/React.createElement("table", {
     className: "w-full text-sm"
@@ -5772,7 +5787,7 @@ function AgreementForm({
     className: "text-right px-3 py-1.5"
   }, "Amount (", f.currency, ")"), f.currency !== "USD" && /*#__PURE__*/React.createElement("th", {
     className: "text-right px-3 py-1.5"
-  }, "Rate\u2192USD"), /*#__PURE__*/React.createElement("th", {
+  }, "Rate→USD"), /*#__PURE__*/React.createElement("th", {
     className: "w-8"
   }))), /*#__PURE__*/React.createElement("tbody", null, invoices.map(iv => /*#__PURE__*/React.createElement("tr", {
     key: iv.id,
@@ -5782,7 +5797,7 @@ function AgreementForm({
   }, /*#__PURE__*/React.createElement("input", {
     value: iv.number,
     onChange: e => setInv(iv.id, "number", e.target.value),
-    placeholder: "INV-\u2026",
+    placeholder: "INV-…",
     className: "w-28 border border-slate-200 rounded px-2 py-1 text-sm"
   })), /*#__PURE__*/React.createElement("td", {
     className: "px-3 py-1.5"
@@ -5815,7 +5830,7 @@ function AgreementForm({
     onClick: () => rmInv(iv.id),
     title: "Remove invoice",
     className: "text-slate-300 hover:text-rose-500"
-  }, "\u2715"))))))), /*#__PURE__*/React.createElement("div", {
+  }, "✕"))))))), /*#__PURE__*/React.createElement("div", {
     className: "px-3 py-2 bg-slate-50/70 border-t border-slate-200 flex items-center justify-between"
   }, /*#__PURE__*/React.createElement("button", {
     onClick: addInv,
@@ -5832,11 +5847,11 @@ function AgreementForm({
     className: "text-[10px] font-semibold text-slate-500 uppercase tracking-[0.14em]"
   }, "Associated Parties"), /*#__PURE__*/React.createElement("span", {
     className: "text-[10px] text-slate-400"
-  }, rows.length, " allocated \xB7 amounts in USD")), agClosed && /*#__PURE__*/React.createElement("p", {
+  }, rows.length, " allocated · amounts in ", f.currency)), agClosed && /*#__PURE__*/React.createElement("p", {
     className: "px-3 py-2 bg-amber-50 border-b border-amber-200 text-[11px] text-amber-800"
   }, "Locked while the status is ", /*#__PURE__*/React.createElement("b", null, f.archived && f.status !== "Closed" ? "Archived" : f.status), ". Set Agreement Status to Ongoing", f.archived ? " and unarchive it" : "", " to change party allocations."), rows.length === 0 ? /*#__PURE__*/React.createElement("p", {
     className: "px-3 py-3 text-xs text-slate-400 italic"
-  }, "No parties yet \u2014 add one or more below. Each becomes a disbursement line under this contract.") : /*#__PURE__*/React.createElement("table", {
+  }, "No parties yet — add one or more below. Each becomes a disbursement line under this contract.") : /*#__PURE__*/React.createElement("table", {
     className: "w-full text-sm"
   }, /*#__PURE__*/React.createElement("tbody", null, rows.map(name => /*#__PURE__*/React.createElement("tr", {
     key: name,
@@ -5873,7 +5888,7 @@ function AgreementForm({
     className: "flex items-baseline gap-1"
   }, /*#__PURE__*/React.createElement("span", {
     className: "text-slate-400 text-xs"
-  }, "$"), /*#__PURE__*/React.createElement("input", {
+  }, csym(f.currency)), /*#__PURE__*/React.createElement("input", {
     type: "number",
     step: "0.01",
     value: allocs[name],
@@ -5884,14 +5899,14 @@ function AgreementForm({
     className: "px-2 py-2 w-8 text-right"
   }, agClosed ? /*#__PURE__*/React.createElement("span", {
     className: "text-[10px] text-slate-300"
-  }, "\u2014") : locked.has(name) ? /*#__PURE__*/React.createElement("span", {
+  }, "—") : locked.has(name) ? /*#__PURE__*/React.createElement("span", {
     className: "text-[10px] text-slate-300",
-    title: "Has payments recorded \u2014 remove it from the Disbursements tab"
+    title: "Has payments recorded — remove it from the Disbursements tab"
   }, "kept") : /*#__PURE__*/React.createElement("button", {
     onClick: () => dropRow(name),
     title: "Remove this party",
     className: "text-slate-300 hover:text-rose-500 text-sm"
-  }, "\u2715")))))), !agClosed && /*#__PURE__*/React.createElement("div", {
+  }, "✕")))))), !agClosed && /*#__PURE__*/React.createElement("div", {
     className: "px-3 py-2.5 bg-slate-50/70 border-t border-slate-200"
   }, adding ? /*#__PURE__*/React.createElement("div", {
     className: "flex gap-2"
@@ -5923,7 +5938,7 @@ function AgreementForm({
       setNewParty("");
     },
     className: "text-slate-500 text-xs px-1"
-  }, "\u2715")) : /*#__PURE__*/React.createElement("div", {
+  }, "✕")) : /*#__PURE__*/React.createElement("div", {
     className: "flex flex-wrap gap-2"
   }, /*#__PURE__*/React.createElement("select", {
     value: pickParty,
@@ -5933,12 +5948,12 @@ function AgreementForm({
     className: "flex-1 min-w-[130px] border border-slate-300 rounded-lg px-2 py-1.5 text-sm bg-white"
   }, /*#__PURE__*/React.createElement("option", {
     value: ""
-  }, "\u2014 Select party \u2014"), available.map(n => /*#__PURE__*/React.createElement("option", {
+  }, "— Select party —"), available.map(n => /*#__PURE__*/React.createElement("option", {
     key: n,
     value: n
   }, n)), /*#__PURE__*/React.createElement("option", {
     value: "__add__"
-  }, "\uFF0B Add new party\u2026")), /*#__PURE__*/React.createElement("input", {
+  }, "＋ Add new party…")), /*#__PURE__*/React.createElement("input", {
     type: "number",
     step: "0.01",
     value: pickAmt,
@@ -5946,7 +5961,7 @@ function AgreementForm({
     onKeyDown: e => {
       if (e.key === "Enter" && pickParty) addRow(pickParty, pickAmt);
     },
-    placeholder: "Amount (USD)",
+    placeholder: `Amount (${f.currency})`,
     className: "w-32 border border-slate-300 rounded-lg px-2 py-1.5 text-sm text-right tabular-nums"
   }), /*#__PURE__*/React.createElement("button", {
     disabled: !pickParty,
@@ -5958,7 +5973,7 @@ function AgreementForm({
     className: "text-slate-500"
   }, "Allocated ", /*#__PURE__*/React.createElement("b", {
     className: "text-slate-800 tabular-nums ml-1"
-  }, "$ ", fmt(allocTotal))), /*#__PURE__*/React.createElement("span", {
+  }, f.currency, " ", fmt(allocTotal))), /*#__PURE__*/React.createElement("span", {
     className: "text-slate-500"
   }, "Contract ", /*#__PURE__*/React.createElement("b", {
     className: "text-slate-800 tabular-nums ml-1"
@@ -6060,7 +6075,7 @@ function InvoiceForm({
     placeholder: "e.g. INV-000114"
   })), !initial && suggestedNumber && String(f.number).trim() === String(suggestedNumber).trim() && /*#__PURE__*/React.createElement("p", {
     className: "-mt-2 mb-4 text-[11px] text-slate-400"
-  }, "Continuing the sequence on ", suggestedFrom || "this agreement", " \u2014 edit if this invoice is numbered differently."), dupe && /*#__PURE__*/React.createElement("p", {
+  }, "Continuing the sequence on ", suggestedFrom || "this agreement", " — edit if this invoice is numbered differently."), dupe && /*#__PURE__*/React.createElement("p", {
     className: "-mt-2 mb-4 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5"
   }, "Invoice ", f.number, " already exists on this agreement. Saving will create a second entry with the same number."), /*#__PURE__*/React.createElement("div", {
     className: "grid grid-cols-1 sm:grid-cols-2 gap-x-4"
@@ -6120,13 +6135,13 @@ function InvoiceForm({
     className: "text-xs text-slate-600"
   }, "Increase the agreement value by this invoice ", /*#__PURE__*/React.createElement("span", {
     className: "block text-[11px] text-slate-400"
-  }, "For variations or scope additions. Leave unticked when invoicing against the existing contract value \u2014 the invoiced total still updates either way."))), /*#__PURE__*/React.createElement(Field, {
+  }, "For variations or scope additions. Leave unticked when invoicing against the existing contract value — the invoiced total still updates either way."))), /*#__PURE__*/React.createElement(Field, {
     label: "Comment"
   }, /*#__PURE__*/React.createElement("input", {
     className: inp,
     value: f.notes,
     onChange: set("notes"),
-    placeholder: "Scope, PO reference, remarks\u2026"
+    placeholder: "Scope, PO reference, remarks…"
   })), /*#__PURE__*/React.createElement("div", {
     className: "flex gap-2"
   }, initial && onDelete && /*#__PURE__*/React.createElement("button", {
@@ -6201,12 +6216,12 @@ function MoneyForm({
     }
   }, /*#__PURE__*/React.createElement("option", {
     value: ""
-  }, "\u2014 Not linked to an invoice \u2014"), invList.map(iv => /*#__PURE__*/React.createElement("option", {
+  }, "— Not linked to an invoice —"), invList.map(iv => /*#__PURE__*/React.createElement("option", {
     key: iv.id,
     value: iv.id
-  }, iv.number || "Invoice", " \xB7 ", iv.date, " \xB7 ", csym(currency), " ", fmt(iv.amount), openBal(iv) > 0.005 ? ` · ${fmt(openBal(iv))} open` : " · settled"))), !initial && autoPick && f.invoiceId === autoPick.id && /*#__PURE__*/React.createElement("p", {
+  }, iv.number || "Invoice", " · ", iv.date, " · ", csym(currency), " ", fmt(iv.amount), openBal(iv) > 0.005 ? ` · ${fmt(openBal(iv))} open` : " · settled"))), !initial && autoPick && f.invoiceId === autoPick.id && /*#__PURE__*/React.createElement("p", {
     className: "-mt-2 mb-4 text-[11px] text-slate-400"
-  }, "Associated automatically with ", autoPick.number || "the oldest invoice", " \u2014 the oldest invoice still carrying a balance (", csym(currency), " ", fmt(openBal(autoPick)), ").")), /*#__PURE__*/React.createElement("div", {
+  }, "Associated automatically with ", autoPick.number || "the oldest invoice", " — the oldest invoice still carrying a balance (", csym(currency), " ", fmt(openBal(autoPick)), ").")), /*#__PURE__*/React.createElement("div", {
     className: "grid grid-cols-1 sm:grid-cols-2 gap-x-4"
   }, /*#__PURE__*/React.createElement(Field, {
     label: "Date"
@@ -6254,7 +6269,7 @@ function MoneyForm({
     className: inp,
     value: f.notes,
     onChange: set("notes"),
-    placeholder: "Bank ref, remarks\u2026"
+    placeholder: "Bank ref, remarks…"
   })), blockMsg && /*#__PURE__*/React.createElement("p", {
     className: "mb-3 px-3 py-2 bg-rose-50 border border-rose-200 rounded-lg text-[11px] text-rose-700"
   }, blockMsg), /*#__PURE__*/React.createElement("div", {
@@ -6325,7 +6340,7 @@ function DisbursementForm({
     })
   }, /*#__PURE__*/React.createElement("option", {
     value: ""
-  }, "\u2014 Not linked to an agreement \u2014"), agreements.map(a => /*#__PURE__*/React.createElement("option", {
+  }, "— Not linked to an agreement —"), agreements.map(a => /*#__PURE__*/React.createElement("option", {
     key: a.id,
     value: a.id
   }, a.ref ? a.ref + " · " : "", a.title, " (", a.party, ") ", a.status !== "Ongoing" ? `[${a.status}]` : "")))), /*#__PURE__*/React.createElement(Field, {
@@ -6339,12 +6354,12 @@ function DisbursementForm({
     })
   }, /*#__PURE__*/React.createElement("option", {
     value: ""
-  }, "\u2014 Select an allocated party \u2014"), allocatedParties.map(p => /*#__PURE__*/React.createElement("option", {
+  }, "— Select an allocated party —"), allocatedParties.map(p => /*#__PURE__*/React.createElement("option", {
     key: p,
     value: p
   }, p))) : /*#__PURE__*/React.createElement("p", {
     className: "text-[11px] text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2"
-  }, "No parties are allocated on this agreement yet. Add the allocation on the agreement first (Agreements \u2192 Edit \u2192 Associated Parties).") : /*#__PURE__*/React.createElement(PartySelect, {
+  }, "No parties are allocated on this agreement yet. Add the allocation on the agreement first (Agreements → Edit → Associated Parties).") : /*#__PURE__*/React.createElement(PartySelect, {
     value: f.party,
     onChange: v => setF({
       ...f,
@@ -6434,9 +6449,13 @@ function CellDisbForm({
   onDelete
 }) {
   const cur = initial && initial.currency || agreement.currency;
-  const rate = dayRate(cur, initial && initial.date || new Date().toISOString().slice(0, 10)) || defaultRate(cur, currencies);
+  // Allocation is held in the contract currency; this rate turns it into USD.
+  const rate = dayRate(cur, initial && initial.date || new Date().toISOString().slice(0, 10)) || defaultRate(cur, currencies) || 1;
+  const rOf = x => dayRate(x.currency, x.date) || defaultRate(x.currency, currencies) || 1;
   const existingPays = initial && initial.payments || [];
   const manyPays = existingPays.length > 1;
+  // Payments are recorded in USD (amount × rate). Show the single existing one in USD.
+  const existingPaidUSD = existingPays.length ? Number(existingPays[0].amount || 0) * Number(existingPays[0].rate || 1) : 0;
   const [f, setF] = useState({
     id: initial && initial.id || uid(),
     agreementId: agreement.id,
@@ -6449,34 +6468,42 @@ function CellDisbForm({
     paymentStatus: initial && initial.paymentStatus || "Pending",
     comment: initial && initial.comment || ""
   });
-  const [paidOut, setPaidOut] = useState(manyPays ? "" : existingPays.length ? existingPays[0].amount : "");
+  const [paidOut, setPaidOut] = useState(manyPays ? "" : existingPays.length ? existingPaidUSD : "");
   const set = k => e => setF({
     ...f,
     [k]: e.target.value
   });
-  const amt = Number(f.amount) || 0;
-  const paid = f.paymentStatus === "Paid" && !manyPays && !String(paidOut).trim() ? amt : Number(paidOut) || 0;
+  const amt = Number(f.amount) || 0; // allocation, in the contract currency
+  const allocUSD = amt * rate; // allocation converted to USD
+  // Disbursement is entered in USD. When marked Paid with no figure, default to the allocation's USD value.
+  const paidUSD = f.paymentStatus === "Paid" && !manyPays && !String(paidOut).trim() ? allocUSD : Number(paidOut) || 0;
   const others = (allDisb || []).filter(x => x.agreementId === agreement.id && x.party === party && x.id !== f.id);
-  const otherPaid = others.reduce((s, x) => s + ((x.payments || []).length ? (x.payments || []).reduce((t, q) => t + Number(q.amount || 0), 0) : x.paymentStatus === "Paid" ? Number(x.amount || 0) : 0), 0);
-  const otherAlloc = others.reduce((s, x) => s + Number(x.amount || 0), 0);
-  // A disbursement (paid) may not exceed the party's allocation on this agreement.
-  const overBy = otherPaid + paid - (otherAlloc + amt);
+  const otherPaidUSD = others.reduce((s, x) => s + ((x.payments || []).length ? (x.payments || []).reduce((t, q) => t + Number(q.amount || 0) * Number(q.rate || 1), 0) : x.paymentStatus === "Paid" ? Number(x.amount || 0) * rOf(x) : 0), 0);
+  const otherAllocNat = others.reduce((s, x) => s + Number(x.amount || 0), 0);
+  const otherAllocUSD = others.reduce((s, x) => s + Number(x.amount || 0) * rOf(x), 0);
+  const totAllocNat = otherAllocNat + amt;
+  const totAllocUSD = otherAllocUSD + allocUSD;
+  const totPaidUSD = otherPaidUSD + paidUSD;
+  // A disbursement (paid, USD) may not exceed the party's allocation (contract currency → USD).
+  const overBy = totPaidUSD - totAllocUSD;
   const overAlloc = overBy > 0.005;
   const save = () => {
     if (overAlloc) return;
     let payments = existingPays;
     if (!manyPays) {
-      payments = paid > 0.005 ? [{
+      payments = paidUSD > 0.005 ? [{
         id: existingPays[0] && existingPays[0].id || uid(),
         date: existingPays[0] && existingPays[0].date || f.date,
-        amount: paid,
-        rate,
+        amount: paidUSD,
+        rate: 1,
+        currency: "USD",
         notes: existingPays[0] && existingPays[0].notes || "Recorded from the agreement table"
       }] : [];
     }
     onSave({
       ...f,
       amount: amt,
+      currency: cur,
       payments
     });
   };
@@ -6485,7 +6512,7 @@ function CellDisbForm({
     onClose: onClose
   }, /*#__PURE__*/React.createElement("p", {
     className: "-mt-1 mb-4 text-[11px] text-slate-500"
-  }, agreement.ref ? agreement.ref + " · " : "", agreement.title, receipt ? /*#__PURE__*/React.createElement(React.Fragment, null, " \xB7 against the payment of ", /*#__PURE__*/React.createElement("b", null, csym(agreement.currency), " ", fmt(receipt.amount)), " received ", receipt.date) : null), /*#__PURE__*/React.createElement("div", {
+  }, agreement.ref ? agreement.ref + " · " : "", agreement.title, receipt ? /*#__PURE__*/React.createElement(React.Fragment, null, " · against the payment of ", /*#__PURE__*/React.createElement("b", null, csym(agreement.currency), " ", fmt(receipt.amount)), " received ", receipt.date) : null), /*#__PURE__*/React.createElement("div", {
     className: "grid grid-cols-1 sm:grid-cols-2 gap-x-4"
   }, /*#__PURE__*/React.createElement(Field, {
     label: `Allocated — expected (${cur})`
@@ -6496,20 +6523,20 @@ function CellDisbForm({
     onChange: set("amount"),
     placeholder: "0.00"
   })), !manyPays && /*#__PURE__*/React.createElement(Field, {
-    label: `Disbursed — actually paid (${cur})`
+    label: `Disbursed — actually paid (USD)`
   }, /*#__PURE__*/React.createElement("input", {
     type: "number",
     className: `${inp} border-rose-300 focus:border-rose-400 focus:ring-rose-100`,
     value: paidOut,
     onChange: e => setPaidOut(e.target.value),
-    placeholder: f.paymentStatus === "Paid" ? fmt(amt) : "0.00"
+    placeholder: f.paymentStatus === "Paid" ? fmt(allocUSD) : "0.00"
   }))), /*#__PURE__*/React.createElement("p", {
     className: "-mt-1 mb-4 text-[11px] text-slate-400"
   }, /*#__PURE__*/React.createElement("b", {
     className: "text-slate-500"
-  }, "Allocated"), " is what ", party, " is owed on this payment; ", /*#__PURE__*/React.createElement("b", {
+  }, "Allocated"), " is what ", party, " is owed on this payment, in the contract currency (", cur, "); ", /*#__PURE__*/React.createElement("b", {
     className: "text-slate-500"
-  }, "Disbursed"), " is what has actually been paid out to them. The figure in the table is the ", /*#__PURE__*/React.createElement("b", null, "Disbursed"), " amount \u2014 edit it here."), /*#__PURE__*/React.createElement("div", {
+  }, "Disbursed"), " is what has actually been paid out to them, in USD. The figure in the table is the ", /*#__PURE__*/React.createElement("b", null, "Disbursed"), " amount — edit it here."), /*#__PURE__*/React.createElement("div", {
     className: "grid grid-cols-1 sm:grid-cols-2 gap-x-4"
   }, /*#__PURE__*/React.createElement(Field, {
     label: "Status"
@@ -6529,44 +6556,48 @@ function CellDisbForm({
     onChange: set("date")
   }))), manyPays && /*#__PURE__*/React.createElement("p", {
     className: "-mt-2 mb-4 text-[11px] text-slate-500"
-  }, existingPays.length, " payments totalling ", csym(cur), " ", fmt(existingPays.reduce((s, q) => s + Number(q.amount || 0), 0)), " are recorded against this disbursement. Edit them individually on the Disbursements tab."), f.paymentStatus === "Paid" && !manyPays && !String(paidOut).trim() && /*#__PURE__*/React.createElement("p", {
+  }, existingPays.length, " payments totalling $ ", fmt(existingPays.reduce((s, q) => s + Number(q.amount || 0) * Number(q.rate || 1), 0)), " are recorded against this disbursement. Edit them individually on the Disbursements tab."), f.paymentStatus === "Paid" && !manyPays && !String(paidOut).trim() && /*#__PURE__*/React.createElement("p", {
     className: "-mt-2 mb-4 text-[11px] text-slate-400"
-  }, "Marked Paid with no figure entered, so the full ", csym(cur), " ", fmt(amt), " counts as disbursed."), /*#__PURE__*/React.createElement("div", {
+  }, "Marked Paid with no figure entered, so the allocation's USD value ($ ", fmt(allocUSD), ") counts as disbursed."), /*#__PURE__*/React.createElement("div", {
     className: "border border-slate-200 rounded-lg mb-4 text-xs"
   }, /*#__PURE__*/React.createElement("div", {
     className: "px-3 py-2 bg-slate-50 border-b border-slate-200 text-[10px] font-semibold text-slate-500 uppercase tracking-[0.14em]"
   }, "Effect on ", party), /*#__PURE__*/React.createElement("div", {
-    className: "px-3 py-2 flex justify-between"
+    className: "px-3 py-2 flex justify-between gap-2"
   }, /*#__PURE__*/React.createElement("span", {
     className: "text-slate-500"
   }, "Allocated to ", party), /*#__PURE__*/React.createElement("span", {
+    className: "text-right"
+  }, /*#__PURE__*/React.createElement("span", {
     className: "tabular-nums"
-  }, csym(cur), " ", fmt(otherAlloc + amt))), /*#__PURE__*/React.createElement("div", {
+  }, csym(cur), " ", fmt(totAllocNat)), cur !== "USD" && /*#__PURE__*/React.createElement("span", {
+    className: "block text-[10px] text-slate-400 tabular-nums"
+  }, "≈ $ ", fmt(totAllocUSD)))), /*#__PURE__*/React.createElement("div", {
     className: "px-3 py-2 flex justify-between border-t border-slate-100"
   }, /*#__PURE__*/React.createElement("span", {
     className: "text-slate-500"
   }, "Disbursed to ", party), /*#__PURE__*/React.createElement("b", {
     className: "tabular-nums"
-  }, csym(cur), " ", fmt(otherPaid + paid))), /*#__PURE__*/React.createElement("div", {
-    className: `px-3 py-2 flex justify-between border-t border-slate-100 ${otherAlloc + amt - otherPaid - paid < -0.005 ? "text-rose-600" : "text-slate-500"}`
-  }, /*#__PURE__*/React.createElement("span", null, otherAlloc + amt - otherPaid - paid < -0.005 ? "Paid beyond allocation" : "Still to pay"), /*#__PURE__*/React.createElement("b", {
+  }, "$ ", fmt(totPaidUSD))), /*#__PURE__*/React.createElement("div", {
+    className: `px-3 py-2 flex justify-between border-t border-slate-100 ${totAllocUSD - totPaidUSD < -0.005 ? "text-rose-600" : "text-slate-500"}`
+  }, /*#__PURE__*/React.createElement("span", null, totAllocUSD - totPaidUSD < -0.005 ? "Paid beyond allocation" : "Still to pay"), /*#__PURE__*/React.createElement("b", {
     className: "tabular-nums"
-  }, csym(cur), " ", fmt(Math.abs(otherAlloc + amt - otherPaid - paid))))), /*#__PURE__*/React.createElement(Field, {
+  }, "$ ", fmt(Math.abs(totAllocUSD - totPaidUSD))))), /*#__PURE__*/React.createElement(Field, {
     label: "Comment"
   }, /*#__PURE__*/React.createElement("input", {
     className: inp,
     value: f.comment,
     onChange: set("comment"),
-    placeholder: "Reference, remarks\u2026"
+    placeholder: "Reference, remarks…"
   })), overAlloc && /*#__PURE__*/React.createElement("p", {
     className: "mb-3 px-3 py-2 bg-rose-50 border border-rose-200 rounded-lg text-[11px] text-rose-700"
-  }, "Disbursed (", csym(cur), " ", fmt(otherPaid + paid), ") exceeds ", party, "'s allocation (", csym(cur), " ", fmt(otherAlloc + amt), ") by ", csym(cur), " ", fmt(overBy), ". Raise the ", /*#__PURE__*/React.createElement("b", null, "Allocated"), " amount above (or the agreement's allocation) before recording this much."), /*#__PURE__*/React.createElement("div", {
+  }, "Disbursed ($ ", fmt(totPaidUSD), ") exceeds ", party, "'s allocation (", csym(cur), " ", fmt(totAllocNat), cur !== "USD" ? ` ≈ $ ${fmt(totAllocUSD)}` : "", ") by $ ", fmt(overBy), ". Raise the ", /*#__PURE__*/React.createElement("b", null, "Allocated"), " amount above (or the agreement's allocation) before recording this much."), /*#__PURE__*/React.createElement("div", {
     className: "flex gap-2"
   }, initial && onDelete && /*#__PURE__*/React.createElement("button", {
     onClick: onDelete,
     className: "px-4 py-2 rounded-lg text-sm font-medium border border-rose-200 text-rose-600 hover:bg-rose-50"
   }, "Delete"), /*#__PURE__*/React.createElement("button", {
-    disabled: !amt && !paid || overAlloc,
+    disabled: !amt && !paidUSD || overAlloc,
     onClick: save,
     className: "flex-1 bg-rose-600 hover:bg-rose-500 disabled:opacity-40 text-white py-2 rounded-lg text-sm font-medium shadow-sm"
   }, initial ? "Save Disbursement" : "Record Disbursement")));
@@ -6653,7 +6684,7 @@ function TransferForm({
   }, "Save"), /*#__PURE__*/React.createElement("button", {
     onClick: () => setAddingAcc(false),
     className: "text-slate-500 text-xs px-1"
-  }, "\u2715")) : /*#__PURE__*/React.createElement("select", {
+  }, "✕")) : /*#__PURE__*/React.createElement("select", {
     className: inp,
     value: f.accountId || "",
     onChange: e => {
@@ -6661,7 +6692,7 @@ function TransferForm({
     }
   }, /*#__PURE__*/React.createElement("option", {
     value: ""
-  }, "\u2014 Select account \u2014"), f.fromParty && accounts.some(a => a.party === f.fromParty) && /*#__PURE__*/React.createElement("optgroup", {
+  }, "— Select account —"), f.fromParty && accounts.some(a => a.party === f.fromParty) && /*#__PURE__*/React.createElement("optgroup", {
     label: `${f.fromParty} accounts`
   }, accounts.filter(a => a.party === f.fromParty).sort((a, b) => orderName(a.name, b.name)).map(a => /*#__PURE__*/React.createElement("option", {
     key: a.id,
@@ -6673,7 +6704,7 @@ function TransferForm({
     value: a.id
   }, a.name, " (", a.currency, ")", a.party ? ` · ${a.party}` : ""))), /*#__PURE__*/React.createElement("option", {
     value: "__add__"
-  }, "\uFF0B Add new account\u2026"))), /*#__PURE__*/React.createElement("div", {
+  }, "＋ Add new account…"))), /*#__PURE__*/React.createElement("div", {
     className: "grid grid-cols-1 sm:grid-cols-2 gap-x-4"
   }, /*#__PURE__*/React.createElement(Field, {
     label: "Date"
@@ -6725,7 +6756,7 @@ function TransferForm({
     className: inp,
     value: f.notes,
     onChange: set("notes"),
-    placeholder: "Bank ref, purpose\u2026"
+    placeholder: "Bank ref, purpose…"
   })), /*#__PURE__*/React.createElement("button", {
     disabled: !f.fromParty || !f.accountId || !f.amount || !f.rate,
     onClick: () => onSave({
@@ -6825,7 +6856,7 @@ function PartyPanel({
     }, "Save"), /*#__PURE__*/React.createElement("button", {
       onClick: () => setEditing(null),
       className: "text-slate-400 text-xs"
-    }, "\u2715")) : /*#__PURE__*/React.createElement(PartyName, {
+    }, "✕")) : /*#__PURE__*/React.createElement(PartyName, {
       name: p.name
     })), /*#__PURE__*/React.createElement("td", {
       className: "px-4 py-2"
@@ -6976,7 +7007,7 @@ function AccountPanel({
   }, "Save"), /*#__PURE__*/React.createElement("button", {
     onClick: () => setEditing(null),
     className: "text-slate-400 text-xs"
-  }, "\u2715")) : a.name), /*#__PURE__*/React.createElement("td", {
+  }, "✕")) : a.name), /*#__PURE__*/React.createElement("td", {
     className: "px-4 py-2"
   }, /*#__PURE__*/React.createElement("select", {
     value: a.party || "",
@@ -6990,7 +7021,7 @@ function AccountPanel({
     className: "border border-slate-300 rounded px-2 py-1 text-xs bg-white"
   }, /*#__PURE__*/React.createElement("option", {
     value: ""
-  }, "\u2014 Unassigned \u2014"), partyOpts.map(p => /*#__PURE__*/React.createElement("option", {
+  }, "— Unassigned —"), partyOpts.map(p => /*#__PURE__*/React.createElement("option", {
     key: p,
     value: p
   }, p)), a.party && !partyOpts.includes(a.party) && /*#__PURE__*/React.createElement("option", {
@@ -7038,7 +7069,7 @@ function AccountPanel({
     onChange: e => setParty(e.target.value)
   }, /*#__PURE__*/React.createElement("option", {
     value: ""
-  }, "\u2014 Unassigned \u2014"), partyOpts.map(p => /*#__PURE__*/React.createElement("option", {
+  }, "— Unassigned —"), partyOpts.map(p => /*#__PURE__*/React.createElement("option", {
     key: p,
     value: p
   }, p)))), /*#__PURE__*/React.createElement("label", {
@@ -7535,7 +7566,7 @@ function ImportPanel({
     className: "bg-white rounded-xl shadow-sm border border-slate-200 p-4 mb-4"
   }, /*#__PURE__*/React.createElement("h3", {
     className: "text-sm font-semibold mb-1"
-  }, "Full Database \u2014 from Excel"), /*#__PURE__*/React.createElement("p", {
+  }, "Full Database — from Excel"), /*#__PURE__*/React.createElement("p", {
     className: "text-xs text-slate-500 mb-3"
   }, "Upload a filled-in copy of the exported Excel workbook. The ", /*#__PURE__*/React.createElement("b", null, "Agreements"), ", ", /*#__PURE__*/React.createElement("b", null, "Receipts"), ", ", /*#__PURE__*/React.createElement("b", null, "Disbursements"), ", ", /*#__PURE__*/React.createElement("b", null, "Disb Payments"), ", and ", /*#__PURE__*/React.createElement("b", null, "Transfers"), " sheets are read. This ", /*#__PURE__*/React.createElement("b", null, "replaces"), " all current data. Tip: use the green Report button (Excel / Both) to download the template first."), /*#__PURE__*/React.createElement("label", {
     className: "inline-flex items-center gap-2 bg-slate-900 hover:bg-slate-700 text-white text-sm px-4 py-2 rounded-lg shadow-sm cursor-pointer"
@@ -7549,9 +7580,9 @@ function ImportPanel({
     className: "bg-white rounded-xl shadow-sm border border-slate-200 p-4"
   }, /*#__PURE__*/React.createElement("h3", {
     className: "text-sm font-semibold mb-1"
-  }, "Party Statement \u2014 from Image(s)"), /*#__PURE__*/React.createElement("p", {
+  }, "Party Statement — from Image(s)"), /*#__PURE__*/React.createElement("p", {
     className: "text-xs text-slate-500 mb-3"
-  }, "Pick a party, then upload statement photos/scans. Transactions are read from the image and ", /*#__PURE__*/React.createElement("b", null, "added"), " to that party \u2014 inflows become received payments, outflows become onward transfers to an \"Imported \u2014 ", imgParty || "party", "\" account."), /*#__PURE__*/React.createElement("div", {
+  }, "Pick a party, then upload statement photos/scans. Transactions are read from the image and ", /*#__PURE__*/React.createElement("b", null, "added"), " to that party — inflows become received payments, outflows become onward transfers to an \"Imported — ", imgParty || "party", "\" account."), /*#__PURE__*/React.createElement("div", {
     className: "flex flex-wrap gap-2 items-end"
   }, /*#__PURE__*/React.createElement("label", {
     className: "block"
@@ -7588,7 +7619,7 @@ function ImportPanel({
     className: "text-xs text-emerald-700 mt-3"
   }, msg), /*#__PURE__*/React.createElement("p", {
     className: "text-[10px] text-slate-400 mt-3"
-  }, "Image reading uses AI extraction and may need a quick review afterward \u2014 check the Agreements, Parties, and Transfers tabs for accuracy."));
+  }, "Image reading uses AI extraction and may need a quick review afterward — check the Agreements, Parties, and Transfers tabs for accuracy."));
 }
 
 // ---- mount ---------------------------------------------------------------
