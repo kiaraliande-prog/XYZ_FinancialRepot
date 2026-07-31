@@ -43,6 +43,10 @@ const DEFAULT_PARTIES = [
 
 const AG_STATUSES = ["Ongoing", "Hold", "Pending", "Overdue", "Closed"];
 const PAY_STATUSES = ["Ongoing", "Hold", "Pending", "Overdue", "Paid"];
+// Global ordering: parties and accounts are shown alphabetically everywhere,
+// with the "Cash …" party and "O. Dev" always pinned to the end.
+const orderName = (a, b) => String(a || "").localeCompare(String(b || ""), undefined, { numeric: true, sensitivity: "base" });
+const orderPartyName = (a, b) => { const pin = (n) => (n === "O. Dev" ? 2 : /^cash/i.test(n) ? 1 : 0); return (pin(a) - pin(b)) || orderName(a, b); };
 const LOGIN_ENABLED = true; // lock screen on - first account created becomes Admin
 const SHARED = true; // team-shared storage: all users of the published app see the same data
 const stGet = async (k, shared = SHARED) => { try { const r = await window.storage.get(k, shared); return r && r.value ? r.value : null; } catch (e) { return null; } };
@@ -641,21 +645,12 @@ function App() {
   disbComputed.forEach((dd) => { if (!dd.party) return; partyBalances[dd.party] = partyBalances[dd.party] || { inUSD: 0, outUSD: 0 }; partyBalances[dd.party].inUSD += dd.paidUSD; });
   trComputed.forEach((t) => { if (!t.fromParty) return; partyBalances[t.fromParty] = partyBalances[t.fromParty] || { inUSD: 0, outUSD: 0 }; partyBalances[t.fromParty].outUSD += t.usd; });
 
-  const accountTotals = data.accounts.map((acc) => {
+  const accountTotals = [...data.accounts].sort((a, b) => orderName(a.name, b.name)).map((acc) => {
     const ts = trComputed.filter((t) => t.accountId === acc.id);
     return { ...acc, count: ts.length, original: ts.filter((t) => t.currency === acc.currency).reduce((s, t) => s + Number(t.amount), 0), usd: ts.reduce((s, t) => s + t.usd, 0) };
   });
 
-  const FRONT_ORDER = ["AF", "CB", "CB*", "RS", "PC*", "CP"];
-  const PARTY_ALIAS = { "CB***": "CB*", "PCA": "PC*", "Cash (Others)": "Cash" };
-  const rankParty = (raw) => {
-    const n = PARTY_ALIAS[raw] || raw;
-    if (n === "O. Dev") return 1001;
-    if (/^cash/i.test(n)) return 1000;
-    const f = FRONT_ORDER.indexOf(n); if (f !== -1) return f;
-    return 500;
-  };
-  const orderParty = (a, b) => { const r = rankParty(a) - rankParty(b); return r !== 0 ? r : a.localeCompare(b); };
+  const orderParty = orderPartyName;
   const disbursementPartyNames = [...new Set([
     ...data.parties.filter((p) => p.type === "disbursement" || p.type === "both").map((p) => p.name),
     ...disbComputed.map((d) => d.party),
@@ -798,7 +793,7 @@ function App() {
     let run = 0;
     const withBal = rows.map((r) => { run += r.kind === "in" ? r.usd : -r.usd; return { ...r, balance: run }; });
     const b = partyBalances[party] || { inUSD: 0, outUSD: 0 };
-    const accts = data.accounts.map((acc) => {
+    const accts = [...data.accounts].sort((a, b) => orderName(a.name, b.name)).map((acc) => {
       const ts = trComputed.filter((t) => t.fromParty === party && t.accountId === acc.id);
       if (!ts.length) return null;
       return { name: acc.name, currency: acc.currency, count: ts.length, usd: ts.reduce((s, t) => s + t.usd, 0), last: ts.map((t) => t.date).sort().pop() };
@@ -898,7 +893,7 @@ function App() {
     }
     const scoped = !!agScope || sel.size > 0;
     const repAccounts = scoped
-      ? data.accounts.map((acc) => { const ts = trComputed.filter((t) => t.accountId === acc.id && (!partySet || partySet.has(t.fromParty))); return { ...acc, count: ts.length, usd: ts.reduce((s, t) => s + t.usd, 0) }; }).filter((a) => a.count > 0)
+      ? data.accounts.map((acc) => { const ts = trComputed.filter((t) => t.accountId === acc.id && (!partySet || partySet.has(t.fromParty))); return { ...acc, count: ts.length, usd: ts.reduce((s, t) => s + t.usd, 0) }; }).filter((a) => a.count > 0).sort((a, b) => orderName(a.name, b.name))
       : accountTotals;
     const kReceived = scoped ? repAg.reduce((s, a) => s + a.receivedUSD, 0) : totReceivedUSD;
     const kDisbursed = scoped ? repAg.reduce((s, a) => s + a.disbursedUSD, 0) : totDisbursedUSD;
@@ -1844,7 +1839,7 @@ function PartiesTab({ allPartyNames, partyPick, setPartyPick, selectedParty, set
       return { id: d.id, agreement: d.agreementTitle, status: d.paymentStatus, received, feePct, fee, paid, net: received - fee - paid, comment: d.comment, payments: d.payments || [], raw: d, locked: isLocked(data.agreements.find((x) => x.id === d.agreementId)) };
     });
     const feeTot = feeRows.reduce((a, r) => ({ received: a.received + r.received, fee: a.fee + r.fee, paid: a.paid + r.paid, net: a.net + r.net }), { received: 0, fee: 0, paid: 0, net: 0 });
-    const assocAccounts = data.accounts.map((acc) => {
+    const assocAccounts = [...data.accounts].sort((a, b) => orderName(a.name, b.name)).map((acc) => {
       const ts = trComputed.filter((t) => t.fromParty === selectedParty && t.accountId === acc.id);
       if (!ts.length) return null;
       return { ...acc, count: ts.length, usd: ts.reduce((s, t) => s + t.usd, 0), last: ts.map((t) => t.date).sort().pop() };
@@ -2516,7 +2511,7 @@ const defaultRate = (cur, currencies) => (cur === "USD" ? 1 : currencies.find((c
 function PartySelect({ value, onChange, type, parties, addParty }) {
   const [adding, setAdding] = useState(false);
   const [newName, setNewName] = useState("");
-  const opts = parties.filter((p) => p.type === type || p.type === "both");
+  const opts = parties.filter((p) => p.type === type || p.type === "both").sort((a, b) => orderPartyName(a.name, b.name));
   const hasValue = value && !opts.some((p) => p.name === value);
   if (adding) return (
     <div className="flex gap-2">
@@ -2545,7 +2540,7 @@ function AgreementForm({ initial, nextRef, currencies, parties, addParty, existi
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const locked = new Set(lockedParties || []);
   const agClosed = isLocked(f);
-  const partyOpts = parties.filter((p) => p.type === "disbursement" || p.type === "both").map((p) => p.name).sort();
+  const partyOpts = parties.filter((p) => p.type === "disbursement" || p.type === "both").map((p) => p.name).sort(orderPartyName);
   const rows = Object.keys(allocs).sort();
   const available = partyOpts.filter((n) => !(n in allocs));
   const addRow = (name, amount) => {
@@ -2751,7 +2746,7 @@ function DisbursementForm({ initial, presetAgreement, agreements, disbursements,
   // already allocated on that agreement (allocations are set on the agreement).
   const allocatedParties = [...new Set((disbursements || []).filter((d) => d.agreementId === f.agreementId && (Number(d.amount) || 0) > 0 && d.id !== f.id).map((d) => d.party))];
   if (initial && initial.party && !allocatedParties.includes(initial.party)) allocatedParties.push(initial.party);
-  allocatedParties.sort();
+  allocatedParties.sort(orderPartyName);
   const agSelected = !!f.agreementId;
   const partyAllowed = !agSelected || allocatedParties.includes(f.party);
   // An allocation can't be set below what has already been paid out on this record.
@@ -2896,8 +2891,8 @@ function TransferForm({ initial, presetFrom, parties, accounts, currencies, addP
         ) : (
           <select className={inp} value={f.accountId || ""} onChange={(e) => { if (e.target.value === "__add__") setAddingAcc(true); else pickAccount(e.target.value); }}>
             <option value="">— Select account —</option>
-            {f.fromParty && accounts.some((a) => a.party === f.fromParty) && (<optgroup label={`${f.fromParty} accounts`}>{accounts.filter((a) => a.party === f.fromParty).map((a) => <option key={a.id} value={a.id}>{a.name} ({a.currency})</option>)}</optgroup>)}
-            <optgroup label="Other accounts">{accounts.filter((a) => !f.fromParty || a.party !== f.fromParty).map((a) => <option key={a.id} value={a.id}>{a.name} ({a.currency}){a.party ? ` · ${a.party}` : ""}</option>)}</optgroup>
+            {f.fromParty && accounts.some((a) => a.party === f.fromParty) && (<optgroup label={`${f.fromParty} accounts`}>{accounts.filter((a) => a.party === f.fromParty).sort((a, b) => orderName(a.name, b.name)).map((a) => <option key={a.id} value={a.id}>{a.name} ({a.currency})</option>)}</optgroup>)}
+            <optgroup label="Other accounts">{accounts.filter((a) => !f.fromParty || a.party !== f.fromParty).sort((a, b) => orderName(a.name, b.name)).map((a) => <option key={a.id} value={a.id}>{a.name} ({a.currency}){a.party ? ` · ${a.party}` : ""}</option>)}</optgroup>
             <option value="__add__">＋ Add new account…</option>
           </select>
         )}
@@ -2968,7 +2963,7 @@ function AccountPanel({ data, save, addAccount, ask }) {
   const [comment, setComment] = useState("");
   const [party, setParty] = useState("");
   const [editing, setEditing] = useState(null);
-  const partyOpts = data.parties.filter((p) => p.type === "disbursement" || p.type === "both").map((p) => p.name);
+  const partyOpts = data.parties.filter((p) => p.type === "disbursement" || p.type === "both").map((p) => p.name).sort(orderPartyName);
   const renameAccount = (id, newName) => {
     newName = (newName || "").trim();
     if (!newName) { setEditing(null); return; }
@@ -3048,7 +3043,7 @@ function ImportPanel({ data, save, ask }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [msg, setMsg] = useState("");
-  const partyOpts = data.parties.filter((p) => p.type === "disbursement" || p.type === "both").map((p) => p.name);
+  const partyOpts = data.parties.filter((p) => p.type === "disbursement" || p.type === "both").map((p) => p.name).sort(orderPartyName);
   const [imgParty, setImgParty] = useState(partyOpts[0] || "");
   const [imgFiles, setImgFiles] = useState([]);
 
