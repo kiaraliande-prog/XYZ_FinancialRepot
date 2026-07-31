@@ -867,29 +867,53 @@ function App() {
     save({ ...data, currencies: [...data.currencies, { code, rate: rate ? Number(rate) : null, fixed: !!rate }] });
   };
 
-  const generatePrettyReport = (partyList, preview = false) => {
+  const generatePrettyReport = (partyList, preview = false, agIds = null) => {
     const d = new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "long", year: "numeric" });
     const money = (n) => Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     const usd = (n) => "$ " + money(n);
+    const esc = (s) => String(s == null ? "" : s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
     const fmtD = (dd) => (dd ? new Date(dd).toLocaleDateString("en-GB") : "");
     const NAVY = "#0f172a", SLATE = "#334155", LINE = "#e2e8f0", GREEN = "#047857", RED = "#be123c", BLUE = "#1d4ed8", BG = "#f8fafc";
-    // Scope the whole report to the selected parties: only the agreements they
-    // are allocated on, only the accounts they have sent funds to, and their
-    // own statements. With no party selected, fall back to the full picture.
+    // Two ways to scope the report:
+    //  • by agreement (agIds): only those agreements, the parties allocated on
+    //    them, their accounts, and a per-agreement breakdown;
+    //  • by party (partyList): only their agreements, accounts and statements.
+    // With neither, the full picture is produced.
+    const agScope = agIds && agIds.length ? new Set(agIds) : null;
     const sel = new Set(partyList || []);
-    const scoped = sel.size > 0;
-    const relAgIds = new Set(disbComputed.filter((dd) => sel.has(dd.party) && dd.agreementId).map((dd) => dd.agreementId));
-    const repAg = scoped ? fAg.filter((a) => relAgIds.has(a.id)) : fAg;
+    let repAg, statementParties, partySet;
+    if (agScope) {
+      repAg = fAg.filter((a) => agScope.has(a.id));
+      statementParties = [...new Set(disbComputed.filter((dd) => agScope.has(dd.agreementId)).map((dd) => dd.party))].filter(Boolean);
+      partySet = new Set(statementParties);
+    } else if (sel.size > 0) {
+      const relAgIds = new Set(disbComputed.filter((dd) => sel.has(dd.party) && dd.agreementId).map((dd) => dd.agreementId));
+      repAg = fAg.filter((a) => relAgIds.has(a.id));
+      statementParties = partyList;
+      partySet = sel;
+    } else {
+      repAg = fAg;
+      statementParties = partyList || [];
+      partySet = null;
+    }
+    const scoped = !!agScope || sel.size > 0;
     const repAccounts = scoped
-      ? data.accounts.map((acc) => { const ts = trComputed.filter((t) => t.accountId === acc.id && sel.has(t.fromParty)); return { ...acc, count: ts.length, usd: ts.reduce((s, t) => s + t.usd, 0) }; }).filter((a) => a.count > 0)
+      ? data.accounts.map((acc) => { const ts = trComputed.filter((t) => t.accountId === acc.id && (!partySet || partySet.has(t.fromParty))); return { ...acc, count: ts.length, usd: ts.reduce((s, t) => s + t.usd, 0) }; }).filter((a) => a.count > 0)
       : accountTotals;
     const kReceived = scoped ? repAg.reduce((s, a) => s + a.receivedUSD, 0) : totReceivedUSD;
     const kDisbursed = scoped ? repAg.reduce((s, a) => s + a.disbursedUSD, 0) : totDisbursedUSD;
     const kOnward = scoped ? repAccounts.reduce((s, a) => s + a.usd, 0) : totTransferredUSD;
-    const scopeLabel = scoped ? `Parties: ${partyList.join(", ")}` : "All parties";
+    const scopeLabel = agScope ? `Agreements: ${repAg.map((a) => esc((a.ref ? a.ref + " · " : "") + a.title)).join(", ")}` : (sel.size > 0 ? `Parties: ${esc(partyList.join(", "))}` : "All parties");
+    // Per-agreement detail (agreement-scoped reports only)
+    const agDetail = agScope ? repAg.map((a) => {
+      const dl = disbComputed.filter((dd) => dd.agreementId === a.id);
+      const allocRows = dl.length ? dl.map((dd) => { const al = Number(dd.amount || 0); return `<tr><td>${esc(dd.party)}</td><td class="r">${usd(al)}</td><td class="r">${usd(dd.paidUSD)}</td><td class="r b">${usd(al - dd.paidUSD)}</td></tr>`; }).join("") : `<tr><td colspan="4" class="empty">No party allocations.</td></tr>`;
+      const recRows = (a.receipts || []).length ? a.receipts.map((r) => `<tr><td>${fmtD(r.date)}</td><td>${esc(r.notes)}</td><td class="r">${a.currency} ${money(r.amount)}</td><td class="r">${usd(Number(r.amount) * Number(r.rate || 0))}</td></tr>`).join("") : `<tr><td colspan="4" class="empty">No payments received.</td></tr>`;
+      return `<section class="party"><h2>${esc((a.ref ? a.ref + " · " : "") + a.title)} <span style="font-size:12px;color:#64748b;font-weight:400">(${esc(a.party)} · ${a.currency} ${money(a.totalValue || 0)} · ${esc(a.status)})</span></h2><h3>Allocations to Parties</h3><table><thead><tr><th>Party</th><th class="r">Allocated (USD)</th><th class="r">Disbursed (USD)</th><th class="r">Pending (USD)</th></tr></thead><tbody>${allocRows}</tbody></table><h3>Payments Received</h3><table><thead><tr><th>Date</th><th>Reference</th><th class="r">Amount (${a.currency})</th><th class="r">USD</th></tr></thead><tbody>${recRows}</tbody></table></section>`;
+    }).join("") : "";
     const agRows = repAg.map((a) => `<tr><td style="font-weight:600">${a.ref ? a.ref + " · " : ""}${a.title}</td><td>${a.party}</td><td><span class="pill ${a.status.toLowerCase()}">${a.status}</span></td><td class="r" style="color:${GREEN}">${usd(a.receivedUSD)}</td><td class="r" style="color:${RED}">${usd(a.disbursedUSD)}</td><td class="r b">${usd(a.undisbursedUSD)}</td></tr>`).join("");
     const accRows = repAccounts.map((a) => `<tr><td style="font-weight:600">${a.name}</td><td>${a.currency}</td><td class="r">${a.count}</td><td class="r b">${usd(a.usd)}</td></tr>`).join("");
-    const partySections = partyList.map((p) => {
+    const partySections = statementParties.map((p) => {
       const st = buildStatement(p);
       const dates = st.rows.map((r) => r.date).filter(Boolean).sort();
       const range = dates.length ? `${fmtD(dates[0])} to ${fmtD(dates[dates.length - 1])}` : "—";
@@ -901,14 +925,21 @@ function App() {
       const accs = st.accts.length ? `<h3>Associated Accounts</h3><table><thead><tr><th>Account</th><th>Currency</th><th class="r">Transfers</th><th class="r">Total Sent (USD)</th><th>Last</th></tr></thead><tbody>${st.accts.map((a) => `<tr><td>${a.name}</td><td>${a.currency}</td><td class="r">${a.count}</td><td class="r">${usd(a.usd)}</td><td>${fmtD(a.last) || ""}</td></tr>`).join("")}</tbody></table>` : "";
       return `<section class="party"><div class="soa-head"><div class="soa-to"><div class="lbl">To</div><div class="soa-party">${p}</div></div><div class="soa-title"><h2>Statement of Accounts</h2><div class="soa-range">${range}</div><table class="soa-summary"><tr class="soa-sumhdr"><td>Account Summary</td><td></td></tr><tr><td>Opening Balance</td><td class="r">$ 0.00</td></tr><tr><td>Allocated (Received)</td><td class="r">$ ${money(st.inUSD)}</td></tr><tr><td>Paid Onward</td><td class="r">$ ${money(st.outUSD)}</td></tr><tr class="soa-bal"><td>Balance Held</td><td class="r">$ ${money(st.holding)}</td></tr></table></div></div>${allocTable}<h3>Disbursement &amp; Onward Payments</h3><table class="soa-table"><thead><tr><th>Date</th><th>Transactions</th><th>Details</th><th class="r">Amount</th><th class="r">Payments</th><th class="r">Balance</th></tr></thead><tbody>${ledger}</tbody></table><div class="soa-due"><span>Balance Held</span><b>$ ${money(st.holding)}</b></div>${accs}</section>`;
     }).join("");
-    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Funds Flow Report — ${d}</title><style>*{box-sizing:border-box}body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:${SLATE};margin:0;background:#fff;font-size:13px;line-height:1.5}.wrap{max-width:1000px;margin:0 auto;padding:0 28px 60px}.cover{background:${NAVY};color:#fff;padding:48px 28px;margin-bottom:32px}.cover .inner{max-width:1000px;margin:0 auto}.cover h1{margin:0 0 6px;font-size:26px}.cover p{margin:0;color:#94a3b8;font-size:13px}.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin:28px auto 0;max-width:1000px}.kpi{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);border-radius:10px;padding:16px}.kpi span{display:block;font-size:10px;text-transform:uppercase;letter-spacing:.6px;color:#cbd5e1;margin-bottom:6px}.kpi b{font-size:20px;color:#fff}h2{font-size:18px;color:${NAVY};border-bottom:2px solid ${NAVY};padding-bottom:6px;margin:36px 0 14px}h3{font-size:13px;color:${SLATE};margin:20px 0 8px;text-transform:uppercase}table{width:100%;border-collapse:collapse;margin-bottom:12px;font-size:12px}th{background:${NAVY};color:#fff;text-align:left;padding:8px 10px;font-size:10px;text-transform:uppercase}th.r{text-align:right}td{padding:7px 10px;border-bottom:1px solid ${LINE}}td.r{text-align:right}td.b{font-weight:700;color:${NAVY}}tbody tr:nth-child(even){background:${BG}}.muted{color:#94a3b8;font-size:11px}.empty{text-align:center;color:#94a3b8;padding:14px}.party{margin-top:30px;page-break-inside:avoid}.soa-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:18px;gap:24px}.soa-to .lbl{font-weight:700;color:${NAVY};margin-bottom:4px}.soa-party{font-size:15px;font-weight:600;color:${SLATE}}.soa-title{text-align:right;min-width:340px}.soa-title h2{border:0;margin:0 0 2px;font-size:22px;color:${NAVY};padding:0}.soa-range{font-size:12px;color:${SLATE};border-bottom:2px solid ${NAVY};padding-bottom:8px;margin-bottom:12px;display:inline-block}.soa-summary{width:100%;border-collapse:collapse}.soa-summary td{padding:6px 10px;border:0;font-size:12px;text-align:left}.soa-summary td.r{text-align:right;font-weight:600;color:${NAVY}}.soa-summary tr.soa-sumhdr td{background:${BG};font-weight:700;color:${NAVY}}.soa-summary tr.soa-bal td{border-top:1.5px solid ${NAVY};border-bottom:1.5px solid ${NAVY};font-weight:700}.soa-table th{background:#333;color:#fff;text-transform:none}.soa-due{display:flex;justify-content:flex-end;gap:40px;padding:14px 10px;font-size:14px;font-weight:700;border-top:1px solid ${LINE}}.soa-due b{color:${NAVY}}.pill{padding:2px 8px;border-radius:20px;font-size:10px;font-weight:600}.pill.ongoing{background:#dbeafe;color:#1e40af}.pill.closed{background:#d1fae5;color:#065f46}.pill.overdue{background:#ffe4e6;color:#9f1239}.pill.hold{background:#fef3c7;color:#92400e}.pill.pending{background:#e2e8f0;color:#334155}.toolbar{position:fixed;top:14px;right:14px}.toolbar button{background:${NAVY};color:#fff;border:0;padding:9px 16px;border-radius:8px;font-size:13px;cursor:pointer}@media print{.toolbar{display:none}.cover{-webkit-print-color-adjust:exact;print-color-adjust:exact}th{-webkit-print-color-adjust:exact;print-color-adjust:exact}.party{page-break-before:always}}</style></head><body><div class="toolbar"><button onclick="window.print()">🖨 Print / Save as PDF</button></div><div class="cover"><div class="inner"><h1>Agreement Revenue &amp; Disbursement Report</h1><p>Base currency: USD · Generated ${d} · ${scopeLabel}</p></div><div class="kpis"><div class="kpi"><span>Received</span><b>${usd(kReceived)}</b></div><div class="kpi"><span>Disbursed</span><b>${usd(kDisbursed)}</b></div><div class="kpi"><span>Undisbursed</span><b>${usd(kReceived - kDisbursed)}</b></div><div class="kpi"><span>Onward to Accounts</span><b>${usd(kOnward)}</b></div></div></div><div class="wrap"><h2>Funds Flow per Agreement</h2><table><thead><tr><th>Agreement</th><th>Client</th><th>Status</th><th class="r">Received</th><th class="r">Disbursed</th><th class="r">Undisbursed</th></tr></thead><tbody>${agRows || `<tr><td colspan="6" class="empty">No agreements.</td></tr>`}</tbody></table><h2>Account Totals</h2><table><thead><tr><th>Account</th><th>Currency</th><th class="r">Transfers</th><th class="r">Received (USD)</th></tr></thead><tbody>${accRows || `<tr><td colspan="4" class="empty">No accounts.</td></tr>`}</tbody></table><h2 style="border-color:${BLUE};color:${BLUE}">Party Statements</h2>${partySections || `<p class="empty">No parties selected.</p>`}</div></body></html>`;
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Funds Flow Report — ${d}</title><style>*{box-sizing:border-box}body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:${SLATE};margin:0;background:#fff;font-size:13px;line-height:1.5}.wrap{max-width:1000px;margin:0 auto;padding:0 28px 60px}.cover{background:${NAVY};color:#fff;padding:48px 28px;margin-bottom:32px}.cover .inner{max-width:1000px;margin:0 auto}.cover h1{margin:0 0 6px;font-size:26px}.cover p{margin:0;color:#94a3b8;font-size:13px}.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin:28px auto 0;max-width:1000px}.kpi{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);border-radius:10px;padding:16px}.kpi span{display:block;font-size:10px;text-transform:uppercase;letter-spacing:.6px;color:#cbd5e1;margin-bottom:6px}.kpi b{font-size:20px;color:#fff}h2{font-size:18px;color:${NAVY};border-bottom:2px solid ${NAVY};padding-bottom:6px;margin:36px 0 14px}h3{font-size:13px;color:${SLATE};margin:20px 0 8px;text-transform:uppercase}table{width:100%;border-collapse:collapse;margin-bottom:12px;font-size:12px}th{background:${NAVY};color:#fff;text-align:left;padding:8px 10px;font-size:10px;text-transform:uppercase}th.r{text-align:right}td{padding:7px 10px;border-bottom:1px solid ${LINE}}td.r{text-align:right}td.b{font-weight:700;color:${NAVY}}tbody tr:nth-child(even){background:${BG}}.muted{color:#94a3b8;font-size:11px}.empty{text-align:center;color:#94a3b8;padding:14px}.party{margin-top:30px;page-break-inside:avoid}.soa-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:18px;gap:24px}.soa-to .lbl{font-weight:700;color:${NAVY};margin-bottom:4px}.soa-party{font-size:15px;font-weight:600;color:${SLATE}}.soa-title{text-align:right;min-width:340px}.soa-title h2{border:0;margin:0 0 2px;font-size:22px;color:${NAVY};padding:0}.soa-range{font-size:12px;color:${SLATE};border-bottom:2px solid ${NAVY};padding-bottom:8px;margin-bottom:12px;display:inline-block}.soa-summary{width:100%;border-collapse:collapse}.soa-summary td{padding:6px 10px;border:0;font-size:12px;text-align:left}.soa-summary td.r{text-align:right;font-weight:600;color:${NAVY}}.soa-summary tr.soa-sumhdr td{background:${BG};font-weight:700;color:${NAVY}}.soa-summary tr.soa-bal td{border-top:1.5px solid ${NAVY};border-bottom:1.5px solid ${NAVY};font-weight:700}.soa-table th{background:#333;color:#fff;text-transform:none}.soa-due{display:flex;justify-content:flex-end;gap:40px;padding:14px 10px;font-size:14px;font-weight:700;border-top:1px solid ${LINE}}.soa-due b{color:${NAVY}}.pill{padding:2px 8px;border-radius:20px;font-size:10px;font-weight:600}.pill.ongoing{background:#dbeafe;color:#1e40af}.pill.closed{background:#d1fae5;color:#065f46}.pill.overdue{background:#ffe4e6;color:#9f1239}.pill.hold{background:#fef3c7;color:#92400e}.pill.pending{background:#e2e8f0;color:#334155}.toolbar{position:fixed;top:14px;right:14px}.toolbar button{background:${NAVY};color:#fff;border:0;padding:9px 16px;border-radius:8px;font-size:13px;cursor:pointer}@media print{.toolbar{display:none}.cover{-webkit-print-color-adjust:exact;print-color-adjust:exact}th{-webkit-print-color-adjust:exact;print-color-adjust:exact}.party{page-break-before:always}}</style></head><body><div class="toolbar"><button onclick="window.print()">🖨 Print / Save as PDF</button></div><div class="cover"><div class="inner"><h1>Agreement Revenue &amp; Disbursement Report</h1><p>Base currency: USD · Generated ${d} · ${scopeLabel}</p></div><div class="kpis"><div class="kpi"><span>Received</span><b>${usd(kReceived)}</b></div><div class="kpi"><span>Disbursed</span><b>${usd(kDisbursed)}</b></div><div class="kpi"><span>Undisbursed</span><b>${usd(kReceived - kDisbursed)}</b></div><div class="kpi"><span>Onward to Accounts</span><b>${usd(kOnward)}</b></div></div></div><div class="wrap"><h2>Funds Flow per Agreement</h2><table><thead><tr><th>Agreement</th><th>Client</th><th>Status</th><th class="r">Received</th><th class="r">Disbursed</th><th class="r">Undisbursed</th></tr></thead><tbody>${agRows || `<tr><td colspan="6" class="empty">No agreements.</td></tr>`}</tbody></table><h2>Account Totals</h2><table><thead><tr><th>Account</th><th>Currency</th><th class="r">Transfers</th><th class="r">Received (USD)</th></tr></thead><tbody>${accRows || `<tr><td colspan="4" class="empty">No accounts.</td></tr>`}</tbody></table>${agScope ? `<h2>Agreement Detail</h2>${agDetail}` : ""}<h2 style="border-color:${BLUE};color:${BLUE}">Party Statements</h2>${partySections || `<p class="empty">No parties selected.</p>`}</div></body></html>`;
     if (preview) return html;
     openOrSave(html, `Funds_Flow_Report_${new Date().toISOString().slice(0, 10)}.html`);
   };
 
-  const exportExcel = (partyList = []) => {
+  const exportExcel = (partyList = [], agIds = null) => {
     const wb = XLSX.utils.book_new();
-    const fLabel = Object.entries(F).filter(([, v]) => v !== "all").map(([k, v]) => `${k}: ${k === "agreement" ? (data.agreements.find((a) => a.id === v)?.title || v) : v}`).join(", ") || "None (all records)";
+    // Agreement-scoped export: limit the agreement-derived sheets and the party
+    // statements to the chosen agreements and the parties allocated on them.
+    const agScope = agIds && agIds.length ? new Set(agIds) : null;
+    const xAg = agScope ? fAg.filter((a) => agScope.has(a.id)) : fAg;
+    const xDisb = agScope ? fDisb.filter((d) => agScope.has(d.agreementId)) : fDisb;
+    const stParties = agScope ? [...new Set(disbComputed.filter((d) => agScope.has(d.agreementId)).map((d) => d.party))].filter(Boolean) : partyList;
+    const xTr = agScope ? fTr.filter((t) => stParties.includes(t.fromParty)) : fTr;
+    const fLabel = agScope ? `Agreements: ${xAg.map((a) => (a.ref ? a.ref + " · " : "") + a.title).join(", ")}` : (Object.entries(F).filter(([, v]) => v !== "all").map(([k, v]) => `${k}: ${k === "agreement" ? (data.agreements.find((a) => a.id === v)?.title || v) : v}`).join(", ") || "None (all records)");
     const NAVY = "0F172A", BAND = "F1F5F9";
     const hdr = { fill: { fgColor: { rgb: NAVY } }, font: { color: { rgb: "FFFFFF" }, bold: true, sz: 10 }, alignment: { horizontal: "left", vertical: "center" } };
     const titleStyle = { font: { bold: true, sz: 14, color: { rgb: NAVY } } };
@@ -925,7 +956,7 @@ function App() {
       ["AGREEMENT REVENUE & DISBURSEMENT REPORT (Base Currency: USD)"], [`Generated: ${new Date().toLocaleDateString("en-GB")}`], [`Active filters: ${fLabel}`], [],
       ["FUNDS FLOW (USD)"], ["Total Received under Agreements", totReceivedUSD], ["Total Disbursed to Parties", totDisbursedUSD], ["Undisbursed Balance", totReceivedUSD - totDisbursedUSD], ["Total Onward Transfers to Accounts", totTransferredUSD], [],
       ["PER AGREEMENT (USD)"], ["Ref", "Agreement", "Client", "Agreement Status", "Payment Status", "Currency", "Total Value", "Invoiced (USD)", "Outstanding (USD)", "Received (orig.)", "Received (USD)", "Disbursed (USD)", "Undisbursed (USD)", "Comment"],
-      ...fAg.map((a) => [a.ref, a.title, a.party, a.status, a.paymentStatus || "Ongoing", a.currency, Number(a.totalValue || 0), a.invoicedUSD, a.outstandingUSD, a.received, a.receivedUSD, a.disbursedUSD, a.undisbursedUSD, a.comment || ""]), [],
+      ...xAg.map((a) => [a.ref, a.title, a.party, a.status, a.paymentStatus || "Ongoing", a.currency, Number(a.totalValue || 0), a.invoicedUSD, a.outstandingUSD, a.received, a.receivedUSD, a.disbursedUSD, a.undisbursedUSD, a.comment || ""]), [],
       ["PARTY BALANCES (USD)"], ["Party", "Disbursed In", "Transferred Out", "Balance Held"],
       ...Object.entries(partyBalances).map(([p, b]) => [p, b.inUSD, b.outUSD, b.inUSD - b.outUSD]), [],
       ["ACCOUNT TOTALS"], ["Account", "Currency", "Transfers", "Received (own currency)", "Received (USD)", "Comment"],
@@ -944,12 +975,12 @@ function App() {
       styleSheet(ws, 0);
       XLSX.utils.book_append_sheet(wb, ws, name);
     };
-    addStyledSheet("Agreements", fAg.map((a) => ({ Ref: a.ref, Title: a.title, Client: a.party, Date: a.date, "Agreement Status": a.status, "Payment Status": a.paymentStatus || "Ongoing", Currency: a.currency, "Total Value": Number(a.totalValue || 0), "Invoiced (orig.)": a.invoiced, "Invoiced (USD)": a.invoicedUSD, "Outstanding (USD)": a.outstandingUSD, "Received (orig.)": a.received, "Received (USD)": a.receivedUSD, "Disbursed (USD)": a.disbursedUSD, "Undisbursed (USD)": a.undisbursedUSD, Comment: a.comment || "" })));
-    addStyledSheet("Invoices", fAg.flatMap((a) => (a.invoices || []).map((iv) => ({ "Invoice Date": iv.date, "Invoice #": iv.number || "", "Due Date": iv.dueDate || "", Agreement: a.title, Ref: a.ref, Client: a.party, Currency: a.currency, Amount: Number(iv.amount || 0), "Rate to USD": Number(iv.rate || 1), "USD Equivalent": Number(iv.amount || 0) * Number(iv.rate || 1), Received: (a.receipts || []).filter((r) => r.invoiceId === iv.id).reduce((t, r) => t + Number(r.amount || 0), 0), Comment: iv.notes || "" }))));
-    addStyledSheet("Receipts", fAg.flatMap((a) => (a.receipts || []).map((r) => ({ Date: r.date, Agreement: a.title, Ref: a.ref, Client: a.party, Currency: a.currency, Amount: Number(r.amount), "Rate to USD": Number(r.rate), "USD Equivalent": r.amount * r.rate, Comment: r.notes || "" }))));
-    addStyledSheet("Disbursements", fDisb.map((d) => ({ Date: d.date, Party: d.party, "Source Agreement": d.agreementTitle, Description: d.description || "", "Payment Status": d.paymentStatus, Currency: d.currency, "Allocated Amount": Number(d.amount), Paid: d.paid, Outstanding: d.outstanding, "Paid (USD)": d.paidUSD, Comment: d.comment || "" })));
-    addStyledSheet("Disb Payments", fDisb.flatMap((d) => (d.payments || []).map((p) => ({ Date: p.date, Party: d.party, "Source Agreement": d.agreementTitle, Currency: d.currency, Amount: Number(p.amount), "Rate to USD": Number(p.rate), "USD Equivalent": p.amount * p.rate, Comment: p.notes || "" }))));
-    addStyledSheet("Transfers", fTr.map((t) => ({ Date: t.date, "From Party": t.fromParty, "To Account": t.accountName, "Account Currency": t.accountCurrency, "Partial/Full": t.payType, "Transfer Currency": t.currency, Amount: Number(t.amount), "Rate to USD": Number(t.rate), "USD Equivalent": t.usd, Comment: t.notes || "" })));
+    addStyledSheet("Agreements", xAg.map((a) => ({ Ref: a.ref, Title: a.title, Client: a.party, Date: a.date, "Agreement Status": a.status, "Payment Status": a.paymentStatus || "Ongoing", Currency: a.currency, "Total Value": Number(a.totalValue || 0), "Invoiced (orig.)": a.invoiced, "Invoiced (USD)": a.invoicedUSD, "Outstanding (USD)": a.outstandingUSD, "Received (orig.)": a.received, "Received (USD)": a.receivedUSD, "Disbursed (USD)": a.disbursedUSD, "Undisbursed (USD)": a.undisbursedUSD, Comment: a.comment || "" })));
+    addStyledSheet("Invoices", xAg.flatMap((a) => (a.invoices || []).map((iv) => ({ "Invoice Date": iv.date, "Invoice #": iv.number || "", "Due Date": iv.dueDate || "", Agreement: a.title, Ref: a.ref, Client: a.party, Currency: a.currency, Amount: Number(iv.amount || 0), "Rate to USD": Number(iv.rate || 1), "USD Equivalent": Number(iv.amount || 0) * Number(iv.rate || 1), Received: (a.receipts || []).filter((r) => r.invoiceId === iv.id).reduce((t, r) => t + Number(r.amount || 0), 0), Comment: iv.notes || "" }))));
+    addStyledSheet("Receipts", xAg.flatMap((a) => (a.receipts || []).map((r) => ({ Date: r.date, Agreement: a.title, Ref: a.ref, Client: a.party, Currency: a.currency, Amount: Number(r.amount), "Rate to USD": Number(r.rate), "USD Equivalent": r.amount * r.rate, Comment: r.notes || "" }))));
+    addStyledSheet("Disbursements", xDisb.map((d) => ({ Date: d.date, Party: d.party, "Source Agreement": d.agreementTitle, Description: d.description || "", "Payment Status": d.paymentStatus, Currency: d.currency, "Allocated Amount": Number(d.amount), Paid: d.paid, Outstanding: d.outstanding, "Paid (USD)": d.paidUSD, Comment: d.comment || "" })));
+    addStyledSheet("Disb Payments", xDisb.flatMap((d) => (d.payments || []).map((p) => ({ Date: p.date, Party: d.party, "Source Agreement": d.agreementTitle, Currency: d.currency, Amount: Number(p.amount), "Rate to USD": Number(p.rate), "USD Equivalent": p.amount * p.rate, Comment: p.notes || "" }))));
+    addStyledSheet("Transfers", xTr.map((t) => ({ Date: t.date, "From Party": t.fromParty, "To Account": t.accountName, "Account Currency": t.accountCurrency, "Partial/Full": t.payType, "Transfer Currency": t.currency, Amount: Number(t.amount), "Rate to USD": Number(t.rate), "USD Equivalent": t.usd, Comment: t.notes || "" })));
     // Excel worksheet names must be unique and <= 31 chars, and cannot contain
     // \ / ? * [ ] :. Stripping those characters can make two different parties
     // collapse to the same name (e.g. "CB" and "CB***" both become "ST · CB"),
@@ -967,7 +998,7 @@ function App() {
       usedSheetNames.add(name.toLowerCase());
       return name;
     };
-    partyList.forEach((p) => {
+    stParties.forEach((p) => {
       const st = buildStatement(p);
       const rows = [
         [`STATEMENT — ${p}`],
@@ -1597,7 +1628,7 @@ function App() {
         onDelete={() => { const id = modal.payload.disbId; const party = modal.payload.party; setModal(null); ask(`Delete the disbursement to ${party} on this agreement? Payments recorded against it are removed too.`, () => remove("disbursements", id)); }} />}
       {modal?.type === "transfer" && <TransferForm initial={modal.payload.edit} presetFrom={modal.payload.presetFrom} parties={data.parties} accounts={data.accounts} currencies={data.currencies} addParty={addParty} addAccount={addAccount} onClose={() => setModal(null)} onSave={(t) => { upsert("transfers", t); setModal(null); }} />}
 
-      {reportModal && <ReportModal allParties={allPartyNames} activeParties={Object.keys(partyBalances)} onClose={() => setReportModal(false)} onPreview={(list) => { setPreviewHtml(generatePrettyReport(list, true)); }} onGenerate={(which, list) => { if (which === "pretty" || which === "both") generatePrettyReport(list); if (which === "excel" || which === "both") exportExcel(list); setReportModal(false); }} />}
+      {reportModal && <ReportModal allParties={allPartyNames} activeParties={Object.keys(partyBalances)} agreements={data.agreements} onClose={() => setReportModal(false)} onPreview={(list, agIds) => { setPreviewHtml(generatePrettyReport(list, true, agIds)); }} onGenerate={(which, list, agIds) => { if (which === "pretty" || which === "both") generatePrettyReport(list, false, agIds); if (which === "excel" || which === "both") exportExcel(list, agIds); setReportModal(false); }} />}
 
       {noteModal && <NoteModal preset={noteModal} users={users} agreements={data.agreements} currentUser={currentUser} onClose={() => setNoteModal(null)} onSave={(n) => { saveNote(n); setNoteModal(null); setNotice("Note saved — see the Notes tab."); }} />}
 
@@ -2315,28 +2346,49 @@ function Modal({ title, children, onClose }) {
 const Field = ({ label, children }) => (<label className="block mb-4"><span className="block text-[10px] font-semibold text-slate-500 uppercase tracking-[0.14em] mb-1.5">{label}</span>{children}</label>);
 const inp = "w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-100 transition-colors";
 
-function ReportModal({ allParties, activeParties, onClose, onGenerate, onPreview }) {
+function ReportModal({ allParties, activeParties, agreements, onClose, onGenerate, onPreview }) {
   const [which, setWhich] = useState("both");
+  const [scope, setScope] = useState("party");   // "party" | "agreement"
   const [pick, setPick] = useState(activeParties);
+  const [agPick, setAgPick] = useState([]);
   const toggle = (p) => setPick(pick.includes(p) ? pick.filter((x) => x !== p) : [...pick, p]);
+  const toggleAg = (id) => setAgPick(agPick.includes(id) ? agPick.filter((x) => x !== id) : [...agPick, id]);
+  const chip = (on) => `px-3 py-1 rounded-full text-xs border transition-colors ${on ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-600 border-slate-300 hover:border-slate-500"}`;
+  const parties = scope === "party" ? pick : [];
+  const agIds = scope === "agreement" ? agPick : null;
   return (
     <Modal title="Generate Report" onClose={onClose}>
       <Field label="Format"><div className="grid grid-cols-3 gap-2">{[["pretty", "Pretty PDF"], ["excel", "Excel"], ["both", "Both"]].map(([k, l]) => (<button key={k} onClick={() => setWhich(k)} className={`py-2 rounded-lg text-sm border transition-colors ${which === k ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-600 border-slate-300 hover:border-slate-500"}`}>{l}</button>))}</div></Field>
-      <Field label="Include party statements for">
-        <div className="flex flex-wrap gap-2 mb-2">
-          <button onClick={() => setPick(allParties)} className="text-xs text-blue-700 underline">Select all</button>
-          <button onClick={() => setPick(activeParties)} className="text-xs text-blue-700 underline">Only active</button>
-          <button onClick={() => setPick([])} className="text-xs text-blue-700 underline">None</button>
-        </div>
-        <div className="flex flex-wrap gap-2 max-h-44 overflow-y-auto border border-slate-200 rounded-lg p-2">
-          {allParties.length === 0 && <span className="text-xs text-slate-400">No parties yet.</span>}
-          {allParties.map((p) => (<button key={p} onClick={() => toggle(p)} className={`px-3 py-1 rounded-full text-xs border transition-colors ${pick.includes(p) ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-600 border-slate-300 hover:border-slate-500"}`}>{p}</button>))}
-        </div>
-        <p className="text-xs text-slate-400 mt-1">{pick.length} selected · the report (agreements, accounts and statements) covers only the selected parties. Select none for an all-parties report.</p>
-      </Field>
+      <Field label="Report scope"><div className="grid grid-cols-2 gap-2">{[["party", "By party"], ["agreement", "By agreement"]].map(([k, l]) => (<button key={k} onClick={() => setScope(k)} className={`py-2 rounded-lg text-sm border transition-colors ${scope === k ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-600 border-slate-300 hover:border-slate-500"}`}>{l}</button>))}</div></Field>
+      {scope === "party" ? (
+        <Field label="Include party statements for">
+          <div className="flex flex-wrap gap-2 mb-2">
+            <button onClick={() => setPick(allParties)} className="text-xs text-blue-700 underline">Select all</button>
+            <button onClick={() => setPick(activeParties)} className="text-xs text-blue-700 underline">Only active</button>
+            <button onClick={() => setPick([])} className="text-xs text-blue-700 underline">None</button>
+          </div>
+          <div className="flex flex-wrap gap-2 max-h-44 overflow-y-auto border border-slate-200 rounded-lg p-2">
+            {allParties.length === 0 && <span className="text-xs text-slate-400">No parties yet.</span>}
+            {allParties.map((p) => (<button key={p} onClick={() => toggle(p)} className={chip(pick.includes(p))}>{p}</button>))}
+          </div>
+          <p className="text-xs text-slate-400 mt-1">{pick.length} selected · the report (agreements, accounts and statements) covers only the selected parties. Select none for an all-parties report.</p>
+        </Field>
+      ) : (
+        <Field label="Include agreements">
+          <div className="flex flex-wrap gap-2 mb-2">
+            <button onClick={() => setAgPick(agreements.map((a) => a.id))} className="text-xs text-blue-700 underline">Select all</button>
+            <button onClick={() => setAgPick([])} className="text-xs text-blue-700 underline">None</button>
+          </div>
+          <div className="flex flex-wrap gap-2 max-h-44 overflow-y-auto border border-slate-200 rounded-lg p-2">
+            {agreements.length === 0 && <span className="text-xs text-slate-400">No agreements yet.</span>}
+            {agreements.map((a) => (<button key={a.id} onClick={() => toggleAg(a.id)} className={chip(agPick.includes(a.id))}>{(a.ref ? a.ref + " · " : "") + a.title}</button>))}
+          </div>
+          <p className="text-xs text-slate-400 mt-1">{agPick.length} selected · the report covers only the selected agreements — their allocations, payments received, associated accounts, and the statements of the parties allocated on them. Select none for an all-agreements report.</p>
+        </Field>
+      )}
       <div className="flex gap-2">
-        <button onClick={() => onPreview(pick)} className="flex-1 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 py-2 rounded-lg text-sm font-medium">👁 Preview</button>
-        <button onClick={() => onGenerate(which, pick)} className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white py-2 rounded-lg text-sm font-medium shadow-sm">Generate</button>
+        <button onClick={() => onPreview(parties, agIds)} className="flex-1 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 py-2 rounded-lg text-sm font-medium">👁 Preview</button>
+        <button onClick={() => onGenerate(which, parties, agIds)} className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white py-2 rounded-lg text-sm font-medium shadow-sm">Generate</button>
       </div>
     </Modal>
   );
