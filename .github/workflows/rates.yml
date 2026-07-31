@@ -1,6 +1,7 @@
-name: Update UAE Central Bank rates
+name: Update exchange rates (CBUAE + Xe)
 
-# Pulls the UAE Central Bank daily exchange rates and commits them into
+# Pulls daily exchange rates (UAE Central Bank for most currencies, Xe.com for
+# the Angolan Kwanza, which the CBUAE doesn't publish) and commits them into
 # rates.json, which the app reads as the (editable) default conversion rate
 # for each transaction's date. Runs every day and can be triggered by hand.
 

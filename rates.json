@@ -1,12 +1,12 @@
 {
   "base": "USD",
-  "source": "UAE Central Bank",
+  "source": "UAE Central Bank; Angolan Kwanza (AOA) via Xe.com",
   "updated": "2026-07-31",
   "usdAed": 3.6725,
   "latest": {
     "EUR": 1.1463946,
     "GBP": 1.3406622,
-    "AOA": 0.0011,
+    "AOA": 0.0010906204,
     "AED": 0.27229408,
     "AUD": 0.70028019,
     "BHD": 2.6521683,
@@ -29,7 +29,7 @@
     "2026-07-31": {
       "EUR": 1.1463946,
       "GBP": 1.3406622,
-      "AOA": 0.0011,
+      "AOA": 0.0010906204,
       "AED": 0.27229408,
       "AUD": 0.70028019,
       "BHD": 2.6521683,
