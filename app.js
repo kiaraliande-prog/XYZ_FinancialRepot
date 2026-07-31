@@ -1732,8 +1732,27 @@ function App() {
       RED = "#be123c",
       BLUE = "#1d4ed8",
       BG = "#f8fafc";
-    const agRows = fAg.map(a => `<tr><td style="font-weight:600">${a.ref ? a.ref + " · " : ""}${a.title}</td><td>${a.party}</td><td><span class="pill ${a.status.toLowerCase()}">${a.status}</span></td><td class="r" style="color:${GREEN}">${usd(a.receivedUSD)}</td><td class="r" style="color:${RED}">${usd(a.disbursedUSD)}</td><td class="r b">${usd(a.undisbursedUSD)}</td></tr>`).join("");
-    const accRows = accountTotals.map(a => `<tr><td style="font-weight:600">${a.name}</td><td>${a.currency}</td><td class="r">${a.count}</td><td class="r b">${usd(a.usd)}</td></tr>`).join("");
+    // Scope the whole report to the selected parties: only the agreements they
+    // are allocated on, only the accounts they have sent funds to, and their
+    // own statements. With no party selected, fall back to the full picture.
+    const sel = new Set(partyList || []);
+    const scoped = sel.size > 0;
+    const relAgIds = new Set(disbComputed.filter(dd => sel.has(dd.party) && dd.agreementId).map(dd => dd.agreementId));
+    const repAg = scoped ? fAg.filter(a => relAgIds.has(a.id)) : fAg;
+    const repAccounts = scoped ? data.accounts.map(acc => {
+      const ts = trComputed.filter(t => t.accountId === acc.id && sel.has(t.fromParty));
+      return {
+        ...acc,
+        count: ts.length,
+        usd: ts.reduce((s, t) => s + t.usd, 0)
+      };
+    }).filter(a => a.count > 0) : accountTotals;
+    const kReceived = scoped ? repAg.reduce((s, a) => s + a.receivedUSD, 0) : totReceivedUSD;
+    const kDisbursed = scoped ? repAg.reduce((s, a) => s + a.disbursedUSD, 0) : totDisbursedUSD;
+    const kOnward = scoped ? repAccounts.reduce((s, a) => s + a.usd, 0) : totTransferredUSD;
+    const scopeLabel = scoped ? `Parties: ${partyList.join(", ")}` : "All parties";
+    const agRows = repAg.map(a => `<tr><td style="font-weight:600">${a.ref ? a.ref + " · " : ""}${a.title}</td><td>${a.party}</td><td><span class="pill ${a.status.toLowerCase()}">${a.status}</span></td><td class="r" style="color:${GREEN}">${usd(a.receivedUSD)}</td><td class="r" style="color:${RED}">${usd(a.disbursedUSD)}</td><td class="r b">${usd(a.undisbursedUSD)}</td></tr>`).join("");
+    const accRows = repAccounts.map(a => `<tr><td style="font-weight:600">${a.name}</td><td>${a.currency}</td><td class="r">${a.count}</td><td class="r b">${usd(a.usd)}</td></tr>`).join("");
     const partySections = partyList.map(p => {
       const st = buildStatement(p);
       const dates = st.rows.map(r => r.date).filter(Boolean).sort();
@@ -1755,7 +1774,7 @@ function App() {
       const accs = st.accts.length ? `<h3>Associated Accounts</h3><table><thead><tr><th>Account</th><th>Currency</th><th class="r">Transfers</th><th class="r">Total Sent (USD)</th><th>Last</th></tr></thead><tbody>${st.accts.map(a => `<tr><td>${a.name}</td><td>${a.currency}</td><td class="r">${a.count}</td><td class="r">${usd(a.usd)}</td><td>${fmtD(a.last) || ""}</td></tr>`).join("")}</tbody></table>` : "";
       return `<section class="party"><div class="soa-head"><div class="soa-to"><div class="lbl">To</div><div class="soa-party">${p}</div></div><div class="soa-title"><h2>Statement of Accounts</h2><div class="soa-range">${range}</div><table class="soa-summary"><tr class="soa-sumhdr"><td>Account Summary</td><td></td></tr><tr><td>Opening Balance</td><td class="r">$ 0.00</td></tr><tr><td>Allocated (Received)</td><td class="r">$ ${money(st.inUSD)}</td></tr><tr><td>Paid Onward</td><td class="r">$ ${money(st.outUSD)}</td></tr><tr class="soa-bal"><td>Balance Held</td><td class="r">$ ${money(st.holding)}</td></tr></table></div></div>${allocTable}<table class="soa-table"><thead><tr><th>Date</th><th>Transactions</th><th>Details</th><th class="r">Amount</th><th class="r">Payments</th><th class="r">Balance</th></tr></thead><tbody>${ledger}</tbody></table><div class="soa-due"><span>Balance Held</span><b>$ ${money(st.holding)}</b></div>${accs}</section>`;
     }).join("");
-    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Funds Flow Report — ${d}</title><style>*{box-sizing:border-box}body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:${SLATE};margin:0;background:#fff;font-size:13px;line-height:1.5}.wrap{max-width:1000px;margin:0 auto;padding:0 28px 60px}.cover{background:${NAVY};color:#fff;padding:48px 28px;margin-bottom:32px}.cover .inner{max-width:1000px;margin:0 auto}.cover h1{margin:0 0 6px;font-size:26px}.cover p{margin:0;color:#94a3b8;font-size:13px}.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin:28px auto 0;max-width:1000px}.kpi{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);border-radius:10px;padding:16px}.kpi span{display:block;font-size:10px;text-transform:uppercase;letter-spacing:.6px;color:#cbd5e1;margin-bottom:6px}.kpi b{font-size:20px;color:#fff}h2{font-size:18px;color:${NAVY};border-bottom:2px solid ${NAVY};padding-bottom:6px;margin:36px 0 14px}h3{font-size:13px;color:${SLATE};margin:20px 0 8px;text-transform:uppercase}table{width:100%;border-collapse:collapse;margin-bottom:12px;font-size:12px}th{background:${NAVY};color:#fff;text-align:left;padding:8px 10px;font-size:10px;text-transform:uppercase}th.r{text-align:right}td{padding:7px 10px;border-bottom:1px solid ${LINE}}td.r{text-align:right}td.b{font-weight:700;color:${NAVY}}tbody tr:nth-child(even){background:${BG}}.muted{color:#94a3b8;font-size:11px}.empty{text-align:center;color:#94a3b8;padding:14px}.party{margin-top:30px;page-break-inside:avoid}.soa-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:18px;gap:24px}.soa-to .lbl{font-weight:700;color:${NAVY};margin-bottom:4px}.soa-party{font-size:15px;font-weight:600;color:${SLATE}}.soa-title{text-align:right;min-width:340px}.soa-title h2{border:0;margin:0 0 2px;font-size:22px;color:${NAVY};padding:0}.soa-range{font-size:12px;color:${SLATE};border-bottom:2px solid ${NAVY};padding-bottom:8px;margin-bottom:12px;display:inline-block}.soa-summary{width:100%;border-collapse:collapse}.soa-summary td{padding:6px 10px;border:0;font-size:12px;text-align:left}.soa-summary td.r{text-align:right;font-weight:600;color:${NAVY}}.soa-summary tr.soa-sumhdr td{background:${BG};font-weight:700;color:${NAVY}}.soa-summary tr.soa-bal td{border-top:1.5px solid ${NAVY};border-bottom:1.5px solid ${NAVY};font-weight:700}.soa-table th{background:#333;color:#fff;text-transform:none}.soa-due{display:flex;justify-content:flex-end;gap:40px;padding:14px 10px;font-size:14px;font-weight:700;border-top:1px solid ${LINE}}.soa-due b{color:${NAVY}}.pill{padding:2px 8px;border-radius:20px;font-size:10px;font-weight:600}.pill.ongoing{background:#dbeafe;color:#1e40af}.pill.closed{background:#d1fae5;color:#065f46}.pill.overdue{background:#ffe4e6;color:#9f1239}.pill.hold{background:#fef3c7;color:#92400e}.pill.pending{background:#e2e8f0;color:#334155}.toolbar{position:fixed;top:14px;right:14px}.toolbar button{background:${NAVY};color:#fff;border:0;padding:9px 16px;border-radius:8px;font-size:13px;cursor:pointer}@media print{.toolbar{display:none}.cover{-webkit-print-color-adjust:exact;print-color-adjust:exact}th{-webkit-print-color-adjust:exact;print-color-adjust:exact}.party{page-break-before:always}}</style></head><body><div class="toolbar"><button onclick="window.print()">🖨 Print / Save as PDF</button></div><div class="cover"><div class="inner"><h1>Agreement Revenue &amp; Disbursement Report</h1><p>Base currency: USD · Generated ${d}</p></div><div class="kpis"><div class="kpi"><span>Received</span><b>${usd(totReceivedUSD)}</b></div><div class="kpi"><span>Disbursed</span><b>${usd(totDisbursedUSD)}</b></div><div class="kpi"><span>Undisbursed</span><b>${usd(totReceivedUSD - totDisbursedUSD)}</b></div><div class="kpi"><span>Onward to Accounts</span><b>${usd(totTransferredUSD)}</b></div></div></div><div class="wrap"><h2>Funds Flow per Agreement</h2><table><thead><tr><th>Agreement</th><th>Client</th><th>Status</th><th class="r">Received</th><th class="r">Disbursed</th><th class="r">Undisbursed</th></tr></thead><tbody>${agRows || `<tr><td colspan="6" class="empty">No agreements.</td></tr>`}</tbody></table><h2>Account Totals</h2><table><thead><tr><th>Account</th><th>Currency</th><th class="r">Transfers</th><th class="r">Received (USD)</th></tr></thead><tbody>${accRows || `<tr><td colspan="4" class="empty">No accounts.</td></tr>`}</tbody></table><h2 style="border-color:${BLUE};color:${BLUE}">Party Statements</h2>${partySections || `<p class="empty">No parties selected.</p>`}</div></body></html>`;
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Funds Flow Report — ${d}</title><style>*{box-sizing:border-box}body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:${SLATE};margin:0;background:#fff;font-size:13px;line-height:1.5}.wrap{max-width:1000px;margin:0 auto;padding:0 28px 60px}.cover{background:${NAVY};color:#fff;padding:48px 28px;margin-bottom:32px}.cover .inner{max-width:1000px;margin:0 auto}.cover h1{margin:0 0 6px;font-size:26px}.cover p{margin:0;color:#94a3b8;font-size:13px}.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin:28px auto 0;max-width:1000px}.kpi{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);border-radius:10px;padding:16px}.kpi span{display:block;font-size:10px;text-transform:uppercase;letter-spacing:.6px;color:#cbd5e1;margin-bottom:6px}.kpi b{font-size:20px;color:#fff}h2{font-size:18px;color:${NAVY};border-bottom:2px solid ${NAVY};padding-bottom:6px;margin:36px 0 14px}h3{font-size:13px;color:${SLATE};margin:20px 0 8px;text-transform:uppercase}table{width:100%;border-collapse:collapse;margin-bottom:12px;font-size:12px}th{background:${NAVY};color:#fff;text-align:left;padding:8px 10px;font-size:10px;text-transform:uppercase}th.r{text-align:right}td{padding:7px 10px;border-bottom:1px solid ${LINE}}td.r{text-align:right}td.b{font-weight:700;color:${NAVY}}tbody tr:nth-child(even){background:${BG}}.muted{color:#94a3b8;font-size:11px}.empty{text-align:center;color:#94a3b8;padding:14px}.party{margin-top:30px;page-break-inside:avoid}.soa-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:18px;gap:24px}.soa-to .lbl{font-weight:700;color:${NAVY};margin-bottom:4px}.soa-party{font-size:15px;font-weight:600;color:${SLATE}}.soa-title{text-align:right;min-width:340px}.soa-title h2{border:0;margin:0 0 2px;font-size:22px;color:${NAVY};padding:0}.soa-range{font-size:12px;color:${SLATE};border-bottom:2px solid ${NAVY};padding-bottom:8px;margin-bottom:12px;display:inline-block}.soa-summary{width:100%;border-collapse:collapse}.soa-summary td{padding:6px 10px;border:0;font-size:12px;text-align:left}.soa-summary td.r{text-align:right;font-weight:600;color:${NAVY}}.soa-summary tr.soa-sumhdr td{background:${BG};font-weight:700;color:${NAVY}}.soa-summary tr.soa-bal td{border-top:1.5px solid ${NAVY};border-bottom:1.5px solid ${NAVY};font-weight:700}.soa-table th{background:#333;color:#fff;text-transform:none}.soa-due{display:flex;justify-content:flex-end;gap:40px;padding:14px 10px;font-size:14px;font-weight:700;border-top:1px solid ${LINE}}.soa-due b{color:${NAVY}}.pill{padding:2px 8px;border-radius:20px;font-size:10px;font-weight:600}.pill.ongoing{background:#dbeafe;color:#1e40af}.pill.closed{background:#d1fae5;color:#065f46}.pill.overdue{background:#ffe4e6;color:#9f1239}.pill.hold{background:#fef3c7;color:#92400e}.pill.pending{background:#e2e8f0;color:#334155}.toolbar{position:fixed;top:14px;right:14px}.toolbar button{background:${NAVY};color:#fff;border:0;padding:9px 16px;border-radius:8px;font-size:13px;cursor:pointer}@media print{.toolbar{display:none}.cover{-webkit-print-color-adjust:exact;print-color-adjust:exact}th{-webkit-print-color-adjust:exact;print-color-adjust:exact}.party{page-break-before:always}}</style></head><body><div class="toolbar"><button onclick="window.print()">🖨 Print / Save as PDF</button></div><div class="cover"><div class="inner"><h1>Agreement Revenue &amp; Disbursement Report</h1><p>Base currency: USD · Generated ${d} · ${scopeLabel}</p></div><div class="kpis"><div class="kpi"><span>Received</span><b>${usd(kReceived)}</b></div><div class="kpi"><span>Disbursed</span><b>${usd(kDisbursed)}</b></div><div class="kpi"><span>Undisbursed</span><b>${usd(kReceived - kDisbursed)}</b></div><div class="kpi"><span>Onward to Accounts</span><b>${usd(kOnward)}</b></div></div></div><div class="wrap"><h2>Funds Flow per Agreement</h2><table><thead><tr><th>Agreement</th><th>Client</th><th>Status</th><th class="r">Received</th><th class="r">Disbursed</th><th class="r">Undisbursed</th></tr></thead><tbody>${agRows || `<tr><td colspan="6" class="empty">No agreements.</td></tr>`}</tbody></table><h2>Account Totals</h2><table><thead><tr><th>Account</th><th>Currency</th><th class="r">Transfers</th><th class="r">Received (USD)</th></tr></thead><tbody>${accRows || `<tr><td colspan="4" class="empty">No accounts.</td></tr>`}</tbody></table><h2 style="border-color:${BLUE};color:${BLUE}">Party Statements</h2>${partySections || `<p class="empty">No parties selected.</p>`}</div></body></html>`;
     if (preview) return html;
     openOrSave(html, `Funds_Flow_Report_${new Date().toISOString().slice(0, 10)}.html`);
   };
@@ -3320,6 +3339,7 @@ function App() {
     initial: modal.payload.edit,
     presetAgreement: modal.payload.presetAgreement,
     agreements: data.agreements,
+    disbursements: data.disbursements,
     currencies: data.currencies,
     parties: data.parties,
     addParty: addParty,
@@ -3370,6 +3390,16 @@ function App() {
         value: `${csym(cur)} ${fmt(left)}`,
         bold: true
       }];
+    },
+    blockWhen: ({
+      amount,
+      id
+    }) => {
+      const dd = data.disbursements.find(x => x.id === modal.payload.disb.id) || modal.payload.disb;
+      const due = Number(dd.amount || 0);
+      const before = (dd.payments || []).filter(q => q.id !== id).reduce((s, q) => s + Number(q.amount || 0), 0);
+      if (before + amount > due + 0.005) return `This would pay ${csym(dd.currency)} ${fmt(before + amount)} to ${dd.party}, exceeding the allocation of ${csym(dd.currency)} ${fmt(due)}. Increase the allocation for ${dd.party} first (edit the agreement's parties or the Allocated amount), then record this payment.`;
+      return null;
     },
     onDelete: () => {
       const pay = modal.payload.payment;
@@ -5111,7 +5141,7 @@ function ReportModal({
     className: `px-3 py-1 rounded-full text-xs border transition-colors ${pick.includes(p) ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-600 border-slate-300 hover:border-slate-500"}`
   }, p))), /*#__PURE__*/React.createElement("p", {
     className: "text-xs text-slate-400 mt-1"
-  }, pick.length, " selected \xB7 summary tables always included.")), /*#__PURE__*/React.createElement("div", {
+  }, pick.length, " selected \xB7 the report (agreements, accounts and statements) covers only the selected parties. Select none for an all-parties report.")), /*#__PURE__*/React.createElement("div", {
     className: "flex gap-2"
   }, /*#__PURE__*/React.createElement("button", {
     onClick: () => onPreview(pick),
@@ -5799,6 +5829,7 @@ function MoneyForm({
   receipts,
   summaryFor,
   summaryTitle,
+  blockWhen,
   onClose,
   onSave,
   onDelete
@@ -5822,6 +5853,10 @@ function MoneyForm({
     amount: Number(f.amount) || 0,
     rate: Number(f.rate) || 0,
     invoiceId: f.invoiceId,
+    id: f.id
+  }) : null;
+  const blockMsg = blockWhen ? blockWhen({
+    amount: Number(f.amount) || 0,
     id: f.id
   }) : null;
   return /*#__PURE__*/React.createElement(Modal, {
@@ -5897,13 +5932,15 @@ function MoneyForm({
     value: f.notes,
     onChange: set("notes"),
     placeholder: "Bank ref, remarks\u2026"
-  })), /*#__PURE__*/React.createElement("div", {
+  })), blockMsg && /*#__PURE__*/React.createElement("p", {
+    className: "mb-3 px-3 py-2 bg-rose-50 border border-rose-200 rounded-lg text-[11px] text-rose-700"
+  }, blockMsg), /*#__PURE__*/React.createElement("div", {
     className: "flex gap-2"
   }, initial && onDelete && /*#__PURE__*/React.createElement("button", {
     onClick: onDelete,
     className: "px-4 py-2 rounded-lg text-sm font-medium border border-rose-200 text-rose-600 hover:bg-rose-50"
   }, "Delete"), /*#__PURE__*/React.createElement("button", {
-    disabled: !f.amount || !f.rate,
+    disabled: !f.amount || !f.rate || !!blockMsg,
     onClick: () => onSave({
       ...f,
       amount: Number(f.amount),
@@ -5916,6 +5953,7 @@ function DisbursementForm({
   initial,
   presetAgreement,
   agreements,
+  disbursements,
   currencies,
   parties,
   addParty,
@@ -5939,6 +5977,16 @@ function DisbursementForm({
     ...f,
     [k]: e.target.value
   });
+  // Rule: a disbursement linked to an agreement can only go to a party that is
+  // already allocated on that agreement (allocations are set on the agreement).
+  const allocatedParties = [...new Set((disbursements || []).filter(d => d.agreementId === f.agreementId && (Number(d.amount) || 0) > 0 && d.id !== f.id).map(d => d.party))];
+  if (initial && initial.party && !allocatedParties.includes(initial.party)) allocatedParties.push(initial.party);
+  allocatedParties.sort();
+  const agSelected = !!f.agreementId;
+  const partyAllowed = !agSelected || allocatedParties.includes(f.party);
+  // An allocation can't be set below what has already been paid out on this record.
+  const paidOnRecord = (initial && initial.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
+  const amountBelowPaid = paidOnRecord > 0 && Number(f.amount || 0) < paidOnRecord - 0.005;
   return /*#__PURE__*/React.createElement(Modal, {
     title: initial ? "Edit Disbursement" : "New Disbursement",
     onClose: onClose
@@ -5947,7 +5995,11 @@ function DisbursementForm({
   }, /*#__PURE__*/React.createElement("select", {
     className: inp,
     value: f.agreementId || "",
-    onChange: set("agreementId")
+    onChange: e => setF({
+      ...f,
+      agreementId: e.target.value,
+      party: ""
+    })
   }, /*#__PURE__*/React.createElement("option", {
     value: ""
   }, "\u2014 Not linked to an agreement \u2014"), agreements.map(a => /*#__PURE__*/React.createElement("option", {
@@ -5955,7 +6007,21 @@ function DisbursementForm({
     value: a.id
   }, a.ref ? a.ref + " · " : "", a.title, " (", a.party, ") ", a.status !== "Ongoing" ? `[${a.status}]` : "")))), /*#__PURE__*/React.createElement(Field, {
     label: "Disburse to Party"
-  }, /*#__PURE__*/React.createElement(PartySelect, {
+  }, agSelected ? allocatedParties.length ? /*#__PURE__*/React.createElement("select", {
+    className: inp,
+    value: f.party,
+    onChange: e => setF({
+      ...f,
+      party: e.target.value
+    })
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "\u2014 Select an allocated party \u2014"), allocatedParties.map(p => /*#__PURE__*/React.createElement("option", {
+    key: p,
+    value: p
+  }, p))) : /*#__PURE__*/React.createElement("p", {
+    className: "text-[11px] text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2"
+  }, "No parties are allocated on this agreement yet. Add the allocation on the agreement first (Agreements \u2192 Edit \u2192 Associated Parties).") : /*#__PURE__*/React.createElement(PartySelect, {
     value: f.party,
     onChange: v => setF({
       ...f,
@@ -5964,7 +6030,9 @@ function DisbursementForm({
     type: "disbursement",
     parties: parties,
     addParty: addParty
-  })), /*#__PURE__*/React.createElement(Field, {
+  }), agSelected && allocatedParties.length > 0 && /*#__PURE__*/React.createElement("p", {
+    className: "mt-1 text-[10px] text-slate-400"
+  }, "Only parties allocated on this agreement appear here. To add one, edit the agreement's allocations.")), /*#__PURE__*/React.createElement(Field, {
     label: "Description"
   }, /*#__PURE__*/React.createElement("input", {
     className: inp,
@@ -6019,8 +6087,10 @@ function DisbursementForm({
     rows: 2,
     value: f.comment || "",
     onChange: set("comment")
-  })), /*#__PURE__*/React.createElement("button", {
-    disabled: !f.party || !f.amount,
+  })), amountBelowPaid && /*#__PURE__*/React.createElement("p", {
+    className: "mb-3 px-3 py-2 bg-rose-50 border border-rose-200 rounded-lg text-[11px] text-rose-700"
+  }, "Allocated amount is below the ", csym(f.currency), " ", fmt(paidOnRecord), " already disbursed on this record. The allocation can't be less than what has been paid."), /*#__PURE__*/React.createElement("button", {
+    disabled: !f.party || !f.amount || !partyAllowed || amountBelowPaid,
     onClick: () => onSave({
       ...f,
       amount: Number(f.amount),
@@ -6066,7 +6136,11 @@ function CellDisbForm({
   const others = (allDisb || []).filter(x => x.agreementId === agreement.id && x.party === party && x.id !== f.id);
   const otherPaid = others.reduce((s, x) => s + ((x.payments || []).length ? (x.payments || []).reduce((t, q) => t + Number(q.amount || 0), 0) : x.paymentStatus === "Paid" ? Number(x.amount || 0) : 0), 0);
   const otherAlloc = others.reduce((s, x) => s + Number(x.amount || 0), 0);
+  // A disbursement (paid) may not exceed the party's allocation on this agreement.
+  const overBy = otherPaid + paid - (otherAlloc + amt);
+  const overAlloc = overBy > 0.005;
   const save = () => {
+    if (overAlloc) return;
     let payments = existingPays;
     if (!manyPays) {
       payments = paid > 0.005 ? [{
@@ -6161,13 +6235,15 @@ function CellDisbForm({
     value: f.comment,
     onChange: set("comment"),
     placeholder: "Reference, remarks\u2026"
-  })), /*#__PURE__*/React.createElement("div", {
+  })), overAlloc && /*#__PURE__*/React.createElement("p", {
+    className: "mb-3 px-3 py-2 bg-rose-50 border border-rose-200 rounded-lg text-[11px] text-rose-700"
+  }, "Disbursed (", csym(cur), " ", fmt(otherPaid + paid), ") exceeds ", party, "'s allocation (", csym(cur), " ", fmt(otherAlloc + amt), ") by ", csym(cur), " ", fmt(overBy), ". Raise the ", /*#__PURE__*/React.createElement("b", null, "Allocated"), " amount above (or the agreement's allocation) before recording this much."), /*#__PURE__*/React.createElement("div", {
     className: "flex gap-2"
   }, initial && onDelete && /*#__PURE__*/React.createElement("button", {
     onClick: onDelete,
     className: "px-4 py-2 rounded-lg text-sm font-medium border border-rose-200 text-rose-600 hover:bg-rose-50"
   }, "Delete"), /*#__PURE__*/React.createElement("button", {
-    disabled: !amt && !paid,
+    disabled: !amt && !paid || overAlloc,
     onClick: save,
     className: "flex-1 bg-rose-600 hover:bg-rose-500 disabled:opacity-40 text-white py-2 rounded-lg text-sm font-medium shadow-sm"
   }, initial ? "Save Disbursement" : "Record Disbursement")));
