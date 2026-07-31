@@ -2915,7 +2915,7 @@ function PartyPanel({ data, save, addParty, ask, orderParty }) {
           <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr><th className="text-left px-4 py-2">Name</th><th className="text-left px-4 py-2">Used For</th><th className="text-right px-4 py-2">Txns</th><th></th></tr></thead>
           <tbody>
             {data.parties.length === 0 && <tr><td colSpan={4} className="px-4 py-4 text-center text-slate-400">No parties yet.</td></tr>}
-            {[...data.parties].sort((a, b) => orderParty(a.name, b.name)).map((p) => {
+            {[...data.parties].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" })).map((p) => {
               const used = usageCount(p.name);
               return (
                 <tr key={p.id} className="border-t border-slate-100">
@@ -2963,7 +2963,7 @@ function AccountPanel({ data, save, addAccount, ask }) {
           <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr><th className="text-left px-4 py-2">Account Name</th><th className="text-left px-4 py-2">Party</th><th className="text-left px-4 py-2">Currency</th><th className="text-left px-4 py-2">Comment</th><th></th></tr></thead>
           <tbody>
             {data.accounts.length === 0 && <tr><td colSpan={5} className="px-4 py-4 text-center text-slate-400">No accounts yet.</td></tr>}
-            {data.accounts.map((a) => (
+            {[...data.accounts].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" })).map((a) => (
               <tr key={a.id} className="border-t border-slate-100">
                 <td className="px-4 py-2 font-medium">{editing && editing.id === a.id ? (<span className="flex gap-1 items-center"><input autoFocus value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") renameAccount(a.id, editing.name); if (e.key === "Escape") setEditing(null); }} className="border border-slate-300 rounded px-2 py-1 text-sm w-40" /><button onClick={() => renameAccount(a.id, editing.name)} className="text-emerald-700 text-xs">Save</button><button onClick={() => setEditing(null)} className="text-slate-400 text-xs">✕</button></span>) : a.name}</td>
                 <td className="px-4 py-2"><select value={a.party || ""} onChange={(e) => save({ ...data, accounts: data.accounts.map((x) => (x.id === a.id ? { ...x, party: e.target.value } : x)) })} className="border border-slate-300 rounded px-2 py-1 text-xs bg-white"><option value="">— Unassigned —</option>{partyOpts.map((p) => <option key={p} value={p}>{p}</option>)}{a.party && !partyOpts.includes(a.party) && <option value={a.party}>{a.party}</option>}</select></td>
