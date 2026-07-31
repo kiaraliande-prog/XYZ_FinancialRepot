@@ -6545,10 +6545,13 @@ function PartyPanel({
   }, "Txns"), /*#__PURE__*/React.createElement("th", null))), /*#__PURE__*/React.createElement("tbody", null, data.parties.length === 0 && /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("td", {
     colSpan: 4,
     className: "px-4 py-4 text-center text-slate-400"
-  }, "No parties yet.")), [...data.parties].sort((a, b) => a.name.localeCompare(b.name, undefined, {
-    numeric: true,
-    sensitivity: "base"
-  })).map(p => {
+  }, "No parties yet.")), [...data.parties].sort((a, b) => {
+    const pin = n => n === "O. Dev" ? 2 : /^cash/i.test(n) ? 1 : 0;
+    return pin(a.name) - pin(b.name) || a.name.localeCompare(b.name, undefined, {
+      numeric: true,
+      sensitivity: "base"
+    });
+  }).map(p => {
     const used = usageCount(p.name);
     return /*#__PURE__*/React.createElement("tr", {
       key: p.id,

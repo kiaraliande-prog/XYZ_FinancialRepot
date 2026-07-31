@@ -2915,7 +2915,7 @@ function PartyPanel({ data, save, addParty, ask, orderParty }) {
           <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr><th className="text-left px-4 py-2">Name</th><th className="text-left px-4 py-2">Used For</th><th className="text-right px-4 py-2">Txns</th><th></th></tr></thead>
           <tbody>
             {data.parties.length === 0 && <tr><td colSpan={4} className="px-4 py-4 text-center text-slate-400">No parties yet.</td></tr>}
-            {[...data.parties].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" })).map((p) => {
+            {[...data.parties].sort((a, b) => { const pin = (n) => (n === "O. Dev" ? 2 : /^cash/i.test(n) ? 1 : 0); return (pin(a.name) - pin(b.name)) || a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }); }).map((p) => {
               const used = usageCount(p.name);
               return (
                 <tr key={p.id} className="border-t border-slate-100">
