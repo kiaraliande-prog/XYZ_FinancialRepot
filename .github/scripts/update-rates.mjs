@@ -5,41 +5,70 @@
 //   usdPerUnit(cur) = aedPerUnit(cur) / aedPerUnit(USD)
 // where aedPerUnit(USD) is the USD/AED peg (~3.6725).
 //
+// NOTE on the data source: the CBUAE used to expose a JSON endpoint, but it
+// now returns a rendered HTML table fragment whose currency names are in
+// ARABIC (the English page is bot-protected / 403). So we scrape that
+// fragment and map the Arabic names to ISO codes below. Angola Kwanza (AOA)
+// is NOT published by the CBUAE, so it is never updated here — its value in
+// rates.json stays at whatever was last seeded/edited.
+//
 // The app only ever reads rates.json (a same-origin file); this script is the
-// single place that talks to the CBUAE. If the CBUAE is unreachable, the
-// script exits without changing the file so a bad fetch never overwrites good
-// data. All values remain editable in the app regardless.
+// single place that talks to the CBUAE. If the CBUAE is unreachable or the
+// page shape changes so nothing parses, the script exits WITHOUT changing the
+// file, so a bad fetch never overwrites good data. All values remain editable
+// in the app regardless.
 import { readFileSync, writeFileSync } from "node:fs";
 
-const CURRENCIES = ["EUR", "GBP", "AOA", "AED"]; // extend as needed
 const ENDPOINT = "https://www.centralbank.ae/umbraco/Surface/Exchange/GetExchangeRateAllCurrency";
 
-const norm = (s) => String(s || "").trim().toUpperCase();
-// CBUAE may report ISO codes ("USD") or names ("US Dollar"); resolve both.
-const NAME2CODE = {
-  "US DOLLAR": "USD", "US DOLLARS": "USD",
-  "EURO": "EUR", "EUROS": "EUR",
-  "POUND STERLING": "GBP", "GB POUND": "GBP", "GREAT BRITAIN POUND": "GBP", "BRITISH POUND": "GBP",
-  "ANGOLA KWANZA": "AOA", "ANGOLAN KWANZA": "AOA", "KWANZA": "AOA",
-  "UAE DIRHAM": "AED",
+// Arabic currency name (as rendered by the CBUAE fragment) -> ISO 4217 code.
+// Extend this map to track more currencies; only codes present here are read.
+const ARABIC2CODE = {
+  "دولار امريكي": "USD",
+  "يورو": "EUR",
+  "جنيه استرليني": "GBP",
+  "درهم اماراتي": "AED",
+  "دولار كندي": "CAD",
+  "فرنك سويسري": "CHF",
+  "ين ياباني": "JPY",
+  "دولار استرالي": "AUD",
+  "دولار سنغافوري": "SGD",
+  "دولار هونج كونج": "HKD",
+  "روبية هندية": "INR",
+  "راند جنوب أفريقي": "ZAR",
+  "كرونة سويدية": "SEK",
+  "كرون نرويجي": "NOK",
+  "كرون دانماركي": "DKK",
+  "ريال سعودي": "SAR",
+  "ريال قطري": "QAR",
+  "دينار كويتي": "KWD",
+  "دينار بحريني": "BHD",
+  "ريال عماني": "OMR",
 };
-const resolveCode = (raw) => { const u = norm(raw); return /^[A-Z]{3}$/.test(u) ? u : (NAME2CODE[u] || u); };
 
+const strip = (s) =>
+  String(s || "").replace(/<[^>]*>/g, "").replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim();
+
+// Return { CODE: aedPerUnit } parsed from the CBUAE HTML fragment.
 async function fetchCbuae() {
   const res = await fetch(ENDPOINT, {
-    headers: { Accept: "application/json, text/plain, */*", "User-Agent": "Mozilla/5.0 (rates-bot)" },
+    headers: {
+      Accept: "text/html, */*",
+      "User-Agent": "Mozilla/5.0 (rates-bot)",
+    },
   });
   if (!res.ok) throw new Error("CBUAE HTTP " + res.status);
-  const data = await res.json();
-  // The payload is an array of { code/currencyCode, rate }. Be liberal in
-  // reading the field names since the CMS shape has varied over time.
-  const list = Array.isArray(data) ? data : data.rates || data.data || [];
+  const html = await res.text();
+  const rows = html.match(/<tr[^>]*>[\s\S]*?<\/tr>/g) || [];
   const aedPerUnit = {};
-  for (const row of list) {
-    const code = resolveCode(row.code || row.currencyCode || row.currency || row.Currency || row.currencyName || row.CurrencyName || row.currencyeng || row.currencyEng);
-    const rate = Number(row.rate ?? row.Rate ?? row.value ?? row.Value ?? row.exchangeRate);
-    if (/^[A-Z]{3}$/.test(code) && isFinite(rate) && rate > 0) aedPerUnit[code] = rate;
+  for (const row of rows) {
+    const tds = row.match(/<td[^>]*>[\s\S]*?<\/td>/g) || [];
+    if (tds.length < 3) continue;
+    const code = ARABIC2CODE[strip(tds[1])];
+    const rate = Number(strip(tds[2]));
+    if (code && isFinite(rate) && rate > 0) aedPerUnit[code] = rate;
   }
+  if (!aedPerUnit.USD) throw new Error("CBUAE fragment parsed but USD/AED peg not found (page shape changed?)");
   return aedPerUnit;
 }
 
@@ -51,17 +80,19 @@ async function main() {
   try {
     aedPerUnit = await fetchCbuae();
   } catch (e) {
-    console.log("CBUAE fetch failed, leaving rates.json unchanged:", e.message);
+    console.log("CBUAE fetch/parse failed, leaving rates.json unchanged:", e.message);
     return;
   }
 
-  // USD/AED peg: prefer the CBUAE USD figure, else keep the stored peg.
-  const usdAed = aedPerUnit.USD || current.usdAed || 3.6725;
+  const round = (v) => Number(Number(v).toPrecision(8)); // trim float noise, keep FX precision
+  const usdAed = aedPerUnit.USD; // guaranteed present by fetchCbuae()
   const day = {};
-  for (const cur of CURRENCIES) {
-    if (cur === "AED") { day.AED = 1 / usdAed; continue; }
-    if (aedPerUnit[cur]) day[cur] = aedPerUnit[cur] / usdAed; // USD per 1 unit
+  for (const code of Object.keys(aedPerUnit)) {
+    if (code === "USD") continue; // USD is the base (1.00), not stored per-unit
+    day[code] = round(aedPerUnit[code] / usdAed); // USD per 1 unit
   }
+  day.AED = round(1 / usdAed); // AED per-unit in USD, from the peg
+
   if (Object.keys(day).length === 0) {
     console.log("No usable currencies parsed from CBUAE; leaving file unchanged.");
     return;
@@ -74,7 +105,7 @@ async function main() {
     updated: today,
     usdAed,
     latest: { ...(current.latest || {}), ...day },
-    byDate: { ...(current.byDate || {}), [today]: day },
+    byDate: { ...(current.byDate || {}), [today]: { ...(current.byDate?.[today] || {}), ...day } },
   };
   writeFileSync(file, JSON.stringify(next, null, 2) + "\n");
   console.log("Updated rates for", today, day);
