@@ -2050,6 +2050,8 @@ function App() {
           tr { page-break-inside: avoid; }
         }
       `), /*#__PURE__*/React.createElement("div", {
+    className: "sticky top-0 z-30 shadow-sm"
+  }, /*#__PURE__*/React.createElement("div", {
     className: "bg-gradient-to-r from-slate-950 via-slate-900 to-slate-950 text-white border-b border-slate-800 shadow-lg"
   }, /*#__PURE__*/React.createElement("div", {
     className: "w-full px-3 sm:px-6 lg:px-8 xl:px-10 py-3 sm:py-5 flex flex-wrap items-center justify-between gap-3 sm:gap-4"
@@ -2206,7 +2208,7 @@ function App() {
       payStatus: "all"
     }),
     className: "text-xs text-blue-700 hover:text-blue-900 underline"
-  }, "Clear all"))), readOnly && /*#__PURE__*/React.createElement("div", {
+  }, "Clear all")))), readOnly && /*#__PURE__*/React.createElement("div", {
     className: "bg-amber-50 border-b border-amber-200"
   }, /*#__PURE__*/React.createElement("div", {
     className: "w-full px-3 sm:px-6 lg:px-8 xl:px-10 py-2.5 flex flex-wrap items-center gap-2 text-xs text-amber-900"

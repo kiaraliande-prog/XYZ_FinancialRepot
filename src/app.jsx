@@ -1018,6 +1018,7 @@ function App() {
           tr { page-break-inside: avoid; }
         }
       `}</style>
+      <div className="sticky top-0 z-30 shadow-sm">
       <div className="bg-gradient-to-r from-slate-950 via-slate-900 to-slate-950 text-white border-b border-slate-800 shadow-lg">
         <div className="w-full px-3 sm:px-6 lg:px-8 xl:px-10 py-3 sm:py-5 flex flex-wrap items-center justify-between gap-3 sm:gap-4">
           <div className="flex items-center gap-2.5 sm:gap-4 min-w-0">
@@ -1076,6 +1077,7 @@ function App() {
         </div>
         </div>
       )}
+      </div>
 
       {readOnly && (
         <div className="bg-amber-50 border-b border-amber-200"><div className="w-full px-3 sm:px-6 lg:px-8 xl:px-10 py-2.5 flex flex-wrap items-center gap-2 text-xs text-amber-900">
