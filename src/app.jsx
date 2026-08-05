@@ -2507,23 +2507,70 @@ function NoteModal({ preset, users, agreements, currentUser, onClose, onSave }) 
 
 function NotesPanel({ notes, users, agreements, onAdd, onEdit, onDelete }) {
   const [q, setQ] = useState("");
+  const [agFilter, setAgFilter] = useState("all");     // "all" | "none" | agreementId
+  const [userFilter, setUserFilter] = useState("all");  // "all" | "none" | userId
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
   const userName = (id) => { if (!id) return ""; const u = users.find((x) => x.userId === id); return u ? (u.name ? `${u.name} (${u.userId})` : u.userId) : id; };
   const agTitle = (id) => { if (!id) return ""; const a = agreements.find((x) => x.id === id); return a ? (a.ref ? a.ref + " · " : "") + a.title : ""; };
   const fmtDate = (ts) => { try { return new Date(ts).toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }); } catch (e) { return ""; } };
+  // Local calendar day (YYYY-MM-DD) of a note, matching the displayed date. Compared
+  // as strings against the date pickers so a note entered late in the day still falls
+  // inside a range that includes that day (no timezone / time-of-day drift).
+  const dayOf = (ts) => { const d = new Date(ts || 0); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+  // Dropdown options built from the agreements / users actually referenced by notes.
+  const agOpts = agreements.filter((a) => notes.some((n) => n.agreementId === a.id));
+  const userOpts = users.filter((u) => notes.some((n) => n.assignedTo === u.userId));
+  const hasUnlinked = notes.some((n) => !n.agreementId);
+  const hasUnassigned = notes.some((n) => !n.assignedTo);
   const sorted = [...notes].sort((a, b) => (b.ts || 0) - (a.ts || 0));
   const ql = q.trim().toLowerCase();
-  const shown = ql ? sorted.filter((n) => (n.text || "").toLowerCase().includes(ql) || userName(n.assignedTo).toLowerCase().includes(ql) || agTitle(n.agreementId).toLowerCase().includes(ql)) : sorted;
+  const shown = sorted.filter((n) => {
+    if (agFilter === "none" ? !!n.agreementId : agFilter !== "all" && n.agreementId !== agFilter) return false;
+    if (userFilter === "none" ? !!n.assignedTo : userFilter !== "all" && n.assignedTo !== userFilter) return false;
+    const day = dayOf(n.ts);
+    if (dateFrom && day < dateFrom) return false;
+    if (dateTo && day > dateTo) return false;
+    if (ql && !((n.text || "").toLowerCase().includes(ql) || userName(n.assignedTo).toLowerCase().includes(ql) || agTitle(n.agreementId).toLowerCase().includes(ql) || (n.createdBy || "").toLowerCase().includes(ql))) return false;
+    return true;
+  });
+  const filtered = agFilter !== "all" || userFilter !== "all" || !!dateFrom || !!dateTo || !!ql;
+  const clearAll = () => { setQ(""); setAgFilter("all"); setUserFilter("all"); setDateFrom(""); setDateTo(""); };
+  const selCls = "border border-slate-200 rounded-lg px-2 py-2 text-sm bg-white focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-100";
   return (
     <div>
-      <div className="flex flex-wrap justify-between items-baseline gap-3 mb-6">
+      <div className="flex flex-wrap justify-between items-baseline gap-3 mb-4">
         <div>
           <h2 className="font-serif text-2xl text-slate-900 tracking-tight">Notes</h2>
-          <p className="text-[10px] uppercase tracking-[0.18em] text-slate-400 mt-1">{notes.length} note{notes.length === 1 ? "" : "s"}</p>
+          <p className="text-[10px] uppercase tracking-[0.18em] text-slate-400 mt-1">{filtered ? `${shown.length} of ${notes.length}` : notes.length} note{notes.length === 1 ? "" : "s"}</p>
         </div>
         <div className="flex items-center gap-2">
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search notes…" className="border border-slate-200 rounded-lg px-3 py-2 text-sm w-44 sm:w-56 focus:border-slate-400 focus:outline-none focus:ring-2 focus:ring-slate-100" />
           <button onClick={onAdd} className="bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] uppercase tracking-[0.14em] px-4 py-2 rounded-lg shadow-sm transition-colors whitespace-nowrap">+ New Note</button>
         </div>
+      </div>
+      <div className="flex flex-wrap items-end gap-x-4 gap-y-2 mb-5 p-3 bg-slate-50 border border-slate-200 rounded-xl">
+        <label className="flex flex-col gap-1"><span className="text-[10px] uppercase tracking-[0.14em] text-slate-400">Agreement</span>
+          <select value={agFilter} onChange={(e) => setAgFilter(e.target.value)} className={selCls}>
+            <option value="all">All agreements</option>
+            {hasUnlinked && <option value="none">No agreement</option>}
+            {agOpts.map((a) => <option key={a.id} value={a.id}>{(a.ref ? a.ref + " · " : "") + a.title}</option>)}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1"><span className="text-[10px] uppercase tracking-[0.14em] text-slate-400">Assigned to</span>
+          <select value={userFilter} onChange={(e) => setUserFilter(e.target.value)} className={selCls}>
+            <option value="all">Anyone</option>
+            {hasUnassigned && <option value="none">Unassigned</option>}
+            {userOpts.map((u) => <option key={u.userId} value={u.userId}>{u.name ? `${u.name} (${u.userId})` : u.userId}</option>)}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1"><span className="text-[10px] uppercase tracking-[0.14em] text-slate-400">From</span>
+          <input type="date" value={dateFrom} max={dateTo || undefined} onChange={(e) => setDateFrom(e.target.value)} className={selCls} />
+        </label>
+        <label className="flex flex-col gap-1"><span className="text-[10px] uppercase tracking-[0.14em] text-slate-400">To</span>
+          <input type="date" value={dateTo} min={dateFrom || undefined} onChange={(e) => setDateTo(e.target.value)} className={selCls} />
+        </label>
+        {filtered && <button onClick={clearAll} className="text-xs text-slate-500 hover:text-slate-800 underline underline-offset-2 pb-2">Clear filters</button>}
       </div>
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
         <div className="overflow-x-auto">
@@ -2538,7 +2585,7 @@ function NotesPanel({ notes, users, agreements, onAdd, onEdit, onDelete }) {
               </tr>
             </thead>
             <tbody className="text-slate-700">
-              {shown.length === 0 && <tr><td colSpan={5} className="px-4 py-10 text-center text-slate-400 italic">{notes.length ? "No notes match your search." : "No notes yet. Use the + button at the bottom-right of any page, or “New Note”."}</td></tr>}
+              {shown.length === 0 && <tr><td colSpan={5} className="px-4 py-10 text-center text-slate-400 italic">{notes.length ? <>No notes match the current filters. {filtered && <button onClick={clearAll} className="not-italic text-blue-700 hover:underline">Clear filters</button>}</> : "No notes yet. Use the + button at the bottom-right of any page, or “New Note”."}</td></tr>}
               {shown.map((n) => (
                 <tr key={n.id} className="border-t border-slate-100 align-top hover:bg-slate-50/70">
                   <td className="px-4 py-3 text-slate-500 tabular-nums whitespace-nowrap">{fmtDate(n.ts)}{n.createdBy && <span className="block text-[10px] text-slate-400">by {n.createdBy}</span>}</td>
