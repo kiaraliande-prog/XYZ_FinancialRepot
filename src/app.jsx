@@ -103,6 +103,34 @@ const sbSet = async (dataObj) => {
   } catch (e) { console.warn("Supabase write failed:", e.message); return null; }
 };
 
+// ---------------------------------------------------------------------------
+// Shared NOTES (zero-setup).
+//
+// Notes are shared across every device through one small JSON document hosted
+// on jsonblob.com (a free, no-signup store). notes-sync.json holds its URL. The
+// app reads it on load, re-reads it every ~20s, and writes it back whenever a
+// note is added/edited/deleted — so a note entered on one device shows up for
+// everyone after a refresh. Only NOTES travel this way; all other data stays on
+// each device. If a full shared backend (Supabase) is configured, that handles
+// notes too and this layer stands down. Fails soft: any error leaves the
+// device's local notes untouched.
+// ---------------------------------------------------------------------------
+let NOTES_URL = null;
+const loadNotesSync = async () => {
+  try { const r = await fetch("notes-sync.json", { cache: "no-store" }); if (r.ok) { const c = await r.json(); if (c && c.blobUrl) { NOTES_URL = c.blobUrl; return NOTES_URL; } } } catch (e) {}
+  return null;
+};
+const notesGet = async () => {
+  if (!NOTES_URL) return null;
+  try { const r = await fetch(NOTES_URL, { cache: "no-store" }); if (!r.ok) throw new Error("notesGet HTTP " + r.status); const j = await r.json(); return Array.isArray(j) ? j : (Array.isArray(j.notes) ? j.notes : []); }
+  catch (e) { console.warn("Notes read failed:", e.message); return null; }
+};
+const notesPut = async (arr) => {
+  if (!NOTES_URL) return false;
+  try { const r = await fetch(NOTES_URL, { method: "PUT", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ notes: arr }) }); return r.ok; }
+  catch (e) { console.warn("Notes write failed:", e.message); return false; }
+};
+
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 const fmt = (n) => (isNaN(n) ? "0.00" : Number(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
 const csym = (c) => ({ USD: "$", EUR: "€", AED: "د.إ", GBP: "£", AOA: "Kz" }[c] || c);
@@ -628,6 +656,16 @@ function App() {
   // Tracks the JSON we last read from / wrote to the shared store, so the 20s
   // poll can tell someone else's change apart from an echo of our own write.
   const syncRef = useRef({ json: null });
+  const notesSyncRef = useRef({ json: null });
+  const dataRef = useRef(data);
+  dataRef.current = data;
+  // Push the current notes to the shared notes store (jsonblob). Skipped when a
+  // full shared backend handles everything.
+  const pushNotes = async (notesArr) => {
+    if (!NOTES_URL || SB) return;
+    notesSyncRef.current.json = JSON.stringify(notesArr || []);
+    await notesPut(notesArr || []);
+  };
   const applyData = async (obj, { push } = {}) => {
     const fixed = normalizeInvoices({ ...empty, ...obj });
     const js = JSON.stringify(fixed);
@@ -640,6 +678,7 @@ function App() {
   useEffect(() => {
     (async () => {
       await loadSbConfig();
+      await loadNotesSync();
       // 1) When a shared backend is configured, it is the source of truth.
       if (SB) {
         const remote = await sbGet();
@@ -671,6 +710,35 @@ function App() {
       } catch (e) {}
     }, 20000);
     return () => clearInterval(id);
+  }, [loaded]);
+
+  // Shared NOTES sync (only when there is no full shared backend). On start,
+  // merge this device's notes with the shared copy (so nothing already typed is
+  // lost) and publish the union; then poll every ~20s and adopt the shared copy
+  // when it changes elsewhere. The notes array is the synced unit (last write
+  // wins), matching how the rest of the app syncs.
+  useEffect(() => {
+    if (!NOTES_URL || SB || !loaded) return;
+    let cancelled = false;
+    (async () => {
+      const remote = await notesGet();
+      if (cancelled || remote == null) return;
+      const local = (dataRef.current.notes) || [];
+      const ids = new Set(remote.map((n) => n.id));
+      const merged = [...remote, ...local.filter((n) => !ids.has(n.id))];
+      const js = JSON.stringify(merged);
+      notesSyncRef.current.json = js;
+      if (js !== JSON.stringify(local)) { const nd = { ...dataRef.current, notes: merged }; setData(nd); await stSet("fintrack-data-v3", JSON.stringify(nd)); }
+      if (merged.length !== remote.length) await notesPut(merged); // share any local-only notes
+    })();
+    const id = setInterval(async () => {
+      if (typeof document !== "undefined" && document.hidden) return;
+      const remote = await notesGet();
+      if (remote == null) return;
+      const js = JSON.stringify(remote);
+      if (js !== notesSyncRef.current.json) { notesSyncRef.current.json = js; const nd = { ...dataRef.current, notes: remote }; setData(nd); await stSet("fintrack-data-v3", JSON.stringify(nd)); }
+    }, 20000);
+    return () => { cancelled = true; clearInterval(id); };
   }, [loaded]);
 
   const entryLocked = !!(release && release.locked);
@@ -942,9 +1010,15 @@ function App() {
   const saveNote = (note) => {
     const list = data.notes || [];
     const exists = list.some((n) => n.id === note.id);
-    save({ ...data, notes: exists ? list.map((n) => (n.id === note.id ? note : n)) : [...list, note] });
+    const nextNotes = exists ? list.map((n) => (n.id === note.id ? note : n)) : [...list, note];
+    save({ ...data, notes: nextNotes });
+    pushNotes(nextNotes); // share with other devices
   };
-  const removeNote = (id) => save({ ...data, notes: (data.notes || []).filter((n) => n.id !== id) });
+  const removeNote = (id) => {
+    const nextNotes = (data.notes || []).filter((n) => n.id !== id);
+    save({ ...data, notes: nextNotes });
+    pushNotes(nextNotes);
+  };
   const loadRegister = () => {
     const doLoad = () => { save(buildSeed()); setTab("agreements"); };
     if (data.agreements.length) ask("This will REPLACE all current data with the register seed. Continue?", doLoad);
