@@ -7,6 +7,7 @@
 const {
   useState,
   useEffect,
+  useRef,
   Fragment,
   Component
 } = React;
@@ -98,6 +99,89 @@ const stSet = async (k, v, shared = SHARED) => {
     await window.storage.set(k, v, shared);
   } catch (e) {
     console.error("storage set failed", e);
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Optional shared backend (Supabase).
+//
+// The app works entirely on the browser's localStorage by default. If a
+// same-origin supabase.json is present AND filled in (url + anonKey), the main
+// data blob is instead read from and written to one shared Supabase row, so
+// every device sees the same agreements, receipts, disbursements, transfers,
+// parties, accounts and notes. User logins stay per-device (not synced).
+//
+// This talks to Supabase's PostgREST endpoint with the *anon* key only — which
+// is designed to be public — so no secret service key ever ships in the page.
+// All calls fail soft: any network/error path falls back to localStorage so the
+// app keeps working offline and never loses data on a hiccup.
+// ---------------------------------------------------------------------------
+let SB = null; // { url, anonKey, table, row } once configured, else null
+const sbHeaders = () => ({
+  apikey: SB.anonKey,
+  Authorization: `Bearer ${SB.anonKey}`,
+  "Content-Type": "application/json"
+});
+const loadSbConfig = async () => {
+  try {
+    const r = await fetch("supabase.json", {
+      cache: "no-store"
+    });
+    if (!r.ok) return null;
+    const c = await r.json();
+    if (c && c.url && c.anonKey) {
+      SB = {
+        url: String(c.url).replace(/\/+$/, ""),
+        anonKey: c.anonKey,
+        table: c.table || "app_state",
+        row: c.row || "shared"
+      };
+      return SB;
+    }
+  } catch (e) {}
+  return null;
+};
+// Returns { data, updatedAt } from the shared row, or null if missing/unreachable.
+const sbGet = async () => {
+  if (!SB) return null;
+  try {
+    const r = await fetch(`${SB.url}/rest/v1/${SB.table}?id=eq.${encodeURIComponent(SB.row)}&select=data,updated_at`, {
+      headers: sbHeaders(),
+      cache: "no-store"
+    });
+    if (!r.ok) throw new Error("sbGet HTTP " + r.status);
+    const rows = await r.json();
+    if (Array.isArray(rows) && rows.length) return {
+      data: rows[0].data,
+      updatedAt: rows[0].updated_at
+    };
+    return null;
+  } catch (e) {
+    console.warn("Supabase read failed:", e.message);
+    return null;
+  }
+};
+// Upsert the shared row. Returns the stored updated_at, or null on failure.
+const sbSet = async dataObj => {
+  if (!SB) return null;
+  try {
+    const r = await fetch(`${SB.url}/rest/v1/${SB.table}?on_conflict=id`, {
+      method: "POST",
+      headers: {
+        ...sbHeaders(),
+        Prefer: "resolution=merge-duplicates,return=representation"
+      },
+      body: JSON.stringify([{
+        id: SB.row,
+        data: dataObj
+      }])
+    });
+    if (!r.ok) throw new Error("sbSet HTTP " + r.status);
+    const rows = await r.json();
+    return Array.isArray(rows) && rows.length ? rows[0].updated_at : true;
+  } catch (e) {
+    console.warn("Supabase write failed:", e.message);
+    return null;
   }
 };
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
@@ -1216,8 +1300,42 @@ function App() {
     const html = generatePrettyReport(Object.keys(partyBalances), true).replace("<body>", '<body onload="setTimeout(function(){try{window.print()}catch(e){}},600)">');
     openOrSave(html, `XYZ_Financial_Report_${new Date().toISOString().slice(0, 10)}.html`);
   };
+
+  // Tracks the JSON we last read from / wrote to the shared store, so the 20s
+  // poll can tell someone else's change apart from an echo of our own write.
+  const syncRef = useRef({
+    json: null
+  });
+  const applyData = async (obj, {
+    push
+  } = {}) => {
+    const fixed = normalizeInvoices({
+      ...empty,
+      ...obj
+    });
+    const js = JSON.stringify(fixed);
+    setData(fixed);
+    syncRef.current.json = js;
+    await stSet("fintrack-data-v3", js);
+    if (push && SB) await sbSet(fixed);
+    return fixed;
+  };
   useEffect(() => {
     (async () => {
+      await loadSbConfig();
+      // 1) When a shared backend is configured, it is the source of truth.
+      if (SB) {
+        const remote = await sbGet();
+        if (remote && remote.data) {
+          try {
+            await applyData(remote.data);
+            setLoaded(true);
+            return;
+          } catch (e) {}
+        }
+      }
+      // 2) Otherwise (or if the shared row is empty/unreachable) use this
+      //    device's localStorage, and seed the shared row from it if configured.
       let raw = await stGet("fintrack-data-v3");
       if (!raw) {
         raw = await stGet("fintrack-data-v3", false);
@@ -1225,22 +1343,43 @@ function App() {
       }
       if (raw) {
         try {
-          const parsed = {
-            ...empty,
-            ...JSON.parse(raw)
-          };
-          const fixed = normalizeInvoices(parsed);
-          setData(fixed);
-          if (fixed !== parsed) await stSet("fintrack-data-v3", JSON.stringify(fixed));
+          await applyData(JSON.parse(raw), {
+            push: true
+          });
         } catch (e) {}
       } else {
-        const seed = normalizeInvoices(buildSeed());
-        setData(seed);
-        await stSet("fintrack-data-v3", JSON.stringify(seed));
+        await applyData(buildSeed(), {
+          push: true
+        });
       }
       setLoaded(true);
     })();
   }, []);
+
+  // Pull the shared store every ~20s so edits made on other devices appear
+  // without a manual reload. Last write wins; our own writes are skipped by the
+  // JSON compare against syncRef. Paused while the tab is hidden.
+  useEffect(() => {
+    if (!SB || !loaded) return;
+    const id = setInterval(async () => {
+      if (typeof document !== "undefined" && document.hidden) return;
+      const remote = await sbGet();
+      if (!remote || !remote.data) return;
+      try {
+        const fixed = normalizeInvoices({
+          ...empty,
+          ...remote.data
+        });
+        const js = JSON.stringify(fixed);
+        if (js !== syncRef.current.json) {
+          syncRef.current.json = js;
+          setData(fixed);
+          await stSet("fintrack-data-v3", js);
+        }
+      } catch (e) {}
+    }, 20000);
+    return () => clearInterval(id);
+  }, [loaded]);
   const entryLocked = !!(release && release.locked);
   const legacyHostOnly = entryLocked && !!release.host && !release.host.includes("/");
   const onPublishedHost = !entryLocked || !release.host || release.host === pagePrint() || legacyHostOnly && release.host === hostOnly();
@@ -1251,7 +1390,13 @@ function App() {
       return;
     }
     setData(next);
-    await stSet("fintrack-data-v3", JSON.stringify(next));
+    const js = JSON.stringify(next);
+    syncRef.current.json = js;
+    await stSet("fintrack-data-v3", js);
+    if (SB) {
+      const ok = await sbSet(next);
+      if (ok === null) setNotice("Saved on this device, but the shared copy didn't update (offline?). It will re-sync on your next change.");
+    }
   };
   const publishRelease = async (version, includeData) => {
     if (!isSuperAdmin) {
