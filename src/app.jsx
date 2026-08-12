@@ -104,31 +104,42 @@ const sbSet = async (dataObj) => {
 };
 
 // ---------------------------------------------------------------------------
-// Shared NOTES (zero-setup).
+// Shared TEAM document (zero-setup): { notes, users }.
 //
-// Notes are shared across every device through one small JSON document hosted
-// on jsonblob.com (a free, no-signup store). notes-sync.json holds its URL. The
-// app reads it on load, re-reads it every ~20s, and writes it back whenever a
-// note is added/edited/deleted — so a note entered on one device shows up for
-// everyone after a refresh. Only NOTES travel this way; all other data stays on
-// each device. If a full shared backend (Supabase) is configured, that handles
-// notes too and this layer stands down. Fails soft: any error leaves the
-// device's local notes untouched.
+// A single small JSON document hosted on jsonblob.com (a free, no-signup store)
+// is shared by every device; notes-sync.json holds its URL. It carries two
+// things so a team can actually use the app across devices:
+//   • notes  — so a note entered on one device shows up for everyone.
+//   • users  — the login accounts, so a person can sign in with the SAME
+//              details on any device instead of being asked to set up a new
+//              admin on each browser.
+// The app reads it on load, re-reads every ~20s, and writes it back on any
+// note/user change. All other financial data stays on each device. If the full
+// Supabase backend is configured, that handles everything and this layer stands
+// down. Fails soft: any error leaves the device's local copy untouched.
+//
+// NOTE: this store is public-by-URL, so the login records (with SHA-256 password
+// hashes) live in it. Use strong, unique passwords; for private accounts switch
+// to the Supabase login (see docs/SHARED_BACKEND.md).
 // ---------------------------------------------------------------------------
-let NOTES_URL = null;
-const loadNotesSync = async () => {
-  try { const r = await fetch("notes-sync.json", { cache: "no-store" }); if (r.ok) { const c = await r.json(); if (c && c.blobUrl) { NOTES_URL = c.blobUrl; return NOTES_URL; } } } catch (e) {}
+let TEAM_URL = null;
+const loadSyncConfig = async () => {
+  try { const r = await fetch("notes-sync.json", { cache: "no-store" }); if (r.ok) { const c = await r.json(); if (c && c.blobUrl) { TEAM_URL = c.blobUrl; return TEAM_URL; } } } catch (e) {}
   return null;
 };
-const notesGet = async () => {
-  if (!NOTES_URL) return null;
-  try { const r = await fetch(NOTES_URL, { cache: "no-store" }); if (!r.ok) throw new Error("notesGet HTTP " + r.status); const j = await r.json(); return Array.isArray(j) ? j : (Array.isArray(j.notes) ? j.notes : []); }
-  catch (e) { console.warn("Notes read failed:", e.message); return null; }
+const teamGet = async () => {
+  if (!TEAM_URL) return null;
+  try {
+    const r = await fetch(TEAM_URL, { cache: "no-store" });
+    if (!r.ok) throw new Error("teamGet HTTP " + r.status);
+    const j = await r.json();
+    return { notes: Array.isArray(j) ? j : (Array.isArray(j.notes) ? j.notes : []), users: Array.isArray(j && j.users) ? j.users : [] };
+  } catch (e) { console.warn("Shared read failed:", e.message); return null; }
 };
-const notesPut = async (arr) => {
-  if (!NOTES_URL) return false;
-  try { const r = await fetch(NOTES_URL, { method: "PUT", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ notes: arr }) }); return r.ok; }
-  catch (e) { console.warn("Notes write failed:", e.message); return false; }
+const teamPut = async (doc) => {
+  if (!TEAM_URL) return false;
+  try { const r = await fetch(TEAM_URL, { method: "PUT", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ notes: doc.notes || [], users: doc.users || [] }) }); return r.ok; }
+  catch (e) { console.warn("Shared write failed:", e.message); return false; }
 };
 
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
@@ -412,6 +423,7 @@ function App() {
   const SESSION_HOURS = 24;
   const MAX_USERS = 3;
   const [authChecked, setAuthChecked] = useState(false);
+  const [syncChecked, setSyncChecked] = useState(false); // shared team doc fetched at least once
   const [users, setUsers] = useState([]);
   const [authed, setAuthed] = useState(false);
   const [currentUser, setCurrentUser] = useState(null);
@@ -452,6 +464,7 @@ function App() {
   const persistUsers = async (arr) => {
     setUsers(arr);
     await stSet("fintrack-auth-v2", JSON.stringify(arr));
+    pushTeam({ users: arr }); // share accounts so the same login works on every device
   };
   const addUser = async (userId, password, question, answer) => {
     userId = (userId || "").trim();
@@ -656,15 +669,18 @@ function App() {
   // Tracks the JSON we last read from / wrote to the shared store, so the 20s
   // poll can tell someone else's change apart from an echo of our own write.
   const syncRef = useRef({ json: null });
-  const notesSyncRef = useRef({ json: null });
+  const teamSyncRef = useRef({ json: null });
   const dataRef = useRef(data);
   dataRef.current = data;
-  // Push the current notes to the shared notes store (jsonblob). Skipped when a
-  // full shared backend handles everything.
-  const pushNotes = async (notesArr) => {
-    if (!NOTES_URL || SB) return;
-    notesSyncRef.current.json = JSON.stringify(notesArr || []);
-    await notesPut(notesArr || []);
+  const usersRef = useRef([]);
+  // Publish the current notes + login accounts to the shared team document.
+  // Always sends both so one never clobbers the other. Skipped when the full
+  // Supabase backend handles everything, or when sharing isn't configured.
+  const pushTeam = async (over) => {
+    if (!TEAM_URL || SB) return;
+    const doc = { notes: (over && over.notes) || dataRef.current.notes || [], users: (over && over.users) || usersRef.current || [] };
+    teamSyncRef.current.json = JSON.stringify(doc);
+    await teamPut(doc);
   };
   const applyData = async (obj, { push } = {}) => {
     const fixed = normalizeInvoices({ ...empty, ...obj });
@@ -678,7 +694,8 @@ function App() {
   useEffect(() => {
     (async () => {
       await loadSbConfig();
-      await loadNotesSync();
+      await loadSyncConfig();
+      if (!TEAM_URL || SB) setSyncChecked(true); // no separate team doc to wait for
       // 1) When a shared backend is configured, it is the source of truth.
       if (SB) {
         const remote = await sbGet();
@@ -712,31 +729,39 @@ function App() {
     return () => clearInterval(id);
   }, [loaded]);
 
-  // Shared NOTES sync (only when there is no full shared backend). On start,
-  // merge this device's notes with the shared copy (so nothing already typed is
-  // lost) and publish the union; then poll every ~20s and adopt the shared copy
-  // when it changes elsewhere. The notes array is the synced unit (last write
-  // wins), matching how the rest of the app syncs.
+  usersRef.current = users;
+  // Shared TEAM sync (notes + login accounts), only when there is no full
+  // Supabase backend. On start, merge this device's notes and accounts with the
+  // shared copy (so nothing is lost) and publish the union; then poll every ~20s
+  // and adopt the shared copy when it changes elsewhere. Each collection is the
+  // synced unit (last write wins).
   useEffect(() => {
-    if (!NOTES_URL || SB || !loaded) return;
+    if (!TEAM_URL || SB || !loaded) return;
     let cancelled = false;
-    (async () => {
-      const remote = await notesGet();
-      if (cancelled || remote == null) return;
-      const local = (dataRef.current.notes) || [];
-      const ids = new Set(remote.map((n) => n.id));
-      const merged = [...remote, ...local.filter((n) => !ids.has(n.id))];
-      const js = JSON.stringify(merged);
-      notesSyncRef.current.json = js;
-      if (js !== JSON.stringify(local)) { const nd = { ...dataRef.current, notes: merged }; setData(nd); await stSet("fintrack-data-v3", JSON.stringify(nd)); }
-      if (merged.length !== remote.length) await notesPut(merged); // share any local-only notes
-    })();
+    const apply = async (remote, initial) => {
+      if (!remote) return;
+      const localNotes = dataRef.current.notes || [];
+      const localUsers = usersRef.current || [];
+      let notes = remote.notes || [];
+      let usrs = remote.users || [];
+      if (initial) {
+        const nIds = new Set(notes.map((n) => n.id));
+        notes = [...notes, ...localNotes.filter((n) => !nIds.has(n.id))];
+        const uIds = new Set(usrs.map((u) => (u.userId || "").toLowerCase()));
+        usrs = [...usrs, ...localUsers.filter((u) => !uIds.has((u.userId || "").toLowerCase()))];
+      }
+      teamSyncRef.current.json = JSON.stringify({ notes, users: usrs });
+      if (JSON.stringify(notes) !== JSON.stringify(localNotes)) { const nd = { ...dataRef.current, notes }; setData(nd); await stSet("fintrack-data-v3", JSON.stringify(nd)); }
+      if (JSON.stringify(usrs) !== JSON.stringify(localUsers)) { setUsers(usrs); await stSet("fintrack-auth-v2", JSON.stringify(usrs)); }
+      if (initial && (notes.length !== (remote.notes || []).length || usrs.length !== (remote.users || []).length)) await teamPut({ notes, users: usrs });
+    };
+    (async () => { const remote = await teamGet(); if (!cancelled) { await apply(remote, true); setSyncChecked(true); } })();
     const id = setInterval(async () => {
       if (typeof document !== "undefined" && document.hidden) return;
-      const remote = await notesGet();
-      if (remote == null) return;
-      const js = JSON.stringify(remote);
-      if (js !== notesSyncRef.current.json) { notesSyncRef.current.json = js; const nd = { ...dataRef.current, notes: remote }; setData(nd); await stSet("fintrack-data-v3", JSON.stringify(nd)); }
+      const remote = await teamGet();
+      if (!remote) return;
+      const js = JSON.stringify({ notes: remote.notes || [], users: remote.users || [] });
+      if (js !== teamSyncRef.current.json) await apply(remote, false);
     }, 20000);
     return () => { cancelled = true; clearInterval(id); };
   }, [loaded]);
@@ -1012,12 +1037,12 @@ function App() {
     const exists = list.some((n) => n.id === note.id);
     const nextNotes = exists ? list.map((n) => (n.id === note.id ? note : n)) : [...list, note];
     save({ ...data, notes: nextNotes });
-    pushNotes(nextNotes); // share with other devices
+    pushTeam({ notes: nextNotes }); // share with other devices
   };
   const removeNote = (id) => {
     const nextNotes = (data.notes || []).filter((n) => n.id !== id);
     save({ ...data, notes: nextNotes });
-    pushNotes(nextNotes);
+    pushTeam({ notes: nextNotes });
   };
   const loadRegister = () => {
     const doLoad = () => { save(buildSeed()); setTab("agreements"); };
@@ -1244,6 +1269,7 @@ function App() {
   };
 
   if (LOGIN_ENABLED && !authChecked) return <div className="min-h-screen bg-slate-100 flex items-center justify-center text-slate-500">…</div>;
+  if (LOGIN_ENABLED && !authed && !syncChecked && users.length === 0) return <div className="min-h-screen bg-slate-100 flex items-center justify-center text-slate-500">Connecting…</div>;
   if (LOGIN_ENABLED && !authed) return <AuthScreen users={users} addUser={addUser} tryLogin={tryLogin} resetPassword={resetPassword} />;
   if (!loaded) return <div className="min-h-screen bg-slate-100 flex items-center justify-center text-slate-500">Loading your records…</div>;
 
@@ -2255,6 +2281,10 @@ function AuthScreen({ users, addUser, tryLogin, resetPassword }) {
   // (when no accounts exist yet), signing in, and self-service password reset
   // remain — every other account is created by the Super Admin in Settings.
   const [mode, setMode] = useState(hasUsers ? "signin" : "firstSetup");
+  // If accounts arrive from the shared store after this screen mounted (e.g. a
+  // fresh device pulling the team's logins), move off the one-time setup form to
+  // the normal sign-in so people just enter their existing details.
+  useEffect(() => { if (hasUsers) setMode((m) => (m === "firstSetup" ? "signin" : m)); }, [hasUsers]);
   const [userId, setUserId] = useState("");
   const [pw, setPw] = useState("");
   const [pw2, setPw2] = useState("");
@@ -2326,6 +2356,12 @@ function AuthScreen({ users, addUser, tryLogin, resetPassword }) {
           </div>)}
           {hasUsers && mode === "signin" && (<div className="mt-4 text-xs text-center">
             <button onClick={() => goto("reset")} className="text-blue-700 hover:underline">Forgot password?</button>
+          </div>)}
+          {mode === "firstSetup" && (<div className="mt-4 text-xs text-center">
+            <button onClick={() => goto("signin")} className="text-blue-700 hover:underline">Already have a login? Sign in</button>
+          </div>)}
+          {!hasUsers && mode === "signin" && (<div className="mt-4 text-xs text-center">
+            <button onClick={() => goto("firstSetup")} className="text-slate-500 hover:underline">← First-time setup</button>
           </div>)}
           <p className="text-[10px] text-slate-400 mt-4 text-center">Local lock screen · passwords &amp; answers hashed (SHA-256)</p>
         </div>
